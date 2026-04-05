@@ -32,7 +32,7 @@ Both the user and Claude should hold each other accountable to these rules.
 - ALWAYS follow OpenSpec workflow: brain dump → proposal → value analysis → tasks
 - ALWAYS ask "does this need Claude, or can Ollama/local handle it?" before using tokens
 - ALWAYS commit after each numbered step, not in batches. If a commit message needs "and" more than once, it should be multiple commits.
-- ALWAYS try Ollama first for any task. Only escalate to Claude if Ollama can't handle it.
+- ALWAYS try Ollama first for any task. Only escalate to Claude if Ollama can't handle it. (See also NEVER rule #12)
 
 ## Hard Limits
 - URL fixes: MAX 1 hour per day. After 1 hour, stop and move on regardless. (Permanent rule, not just today.)

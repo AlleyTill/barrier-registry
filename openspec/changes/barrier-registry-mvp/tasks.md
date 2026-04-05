@@ -10,7 +10,7 @@
 - [ ] TASK-004: Design character sheet for Agent #1 — US Policy Researcher (Role, Goals, Tools, Constraints, NEVER/ALWAYS, dialogue examples, version number)
 - [ ] TASK-005: Build 140-line agent framework using Ollama (llama3). Must include max_iterations parameter.
 - [ ] TASK-006: Wire SQLite database as an agent tool (search policies, search WHO data)
-- [ ] TASK-007: Run Agent #1 manually — ask real questions, compare output to TASK-001 human baseline
+- [ ] TASK-007: Run Agent #1 manually — ask real questions, grade output against human baseline using 5 criteria: Grounding, Coverage, Faithfulness, Staleness Awareness, Refusal Quality
 - [ ] TASK-008: Run same questions through Claude and compare outputs (desirability comparison — for future reference, not deployment)
 - [ ] TASK-009: Fix failures, iterate until agent matches human baseline quality with citations
 
@@ -40,6 +40,7 @@
 - [ ] TASK-026: Add "I don't know" confidence indicators
 - [ ] TASK-027: Deploy to Railway.app or Render.com
 - [ ] TASK-028: Signup/email capture page
+- [ ] TASK-028b: Add Terms of Service — "informational only, not legal advice" disclaimer on every output
 
 ## Phase 6: AWE Preparation
 - [ ] TASK-029: Elevator pitch written and practiced
