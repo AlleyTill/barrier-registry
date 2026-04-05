@@ -1,13 +1,11 @@
-# Build Checkpoints
-## Each step logged with: what was done, why, what to revert if wrong
 
----
-
-## Checkpoint 0: Pre-build state
+## Checkpoint 1: OpenSpec Formalized
 - **Date:** April 4, 2026
-- **State:** 2,623 records in SQLite (US/CAN/MEX + UK saved), no agents, no tests, no OpenSpec
-- **Git status:** Not yet committed
-- **Decision:** Following Multiverse School course process strictly
-- **Revert:** This is the baseline. Nothing to undo.
+- **What was done:** Initialized OpenSpec, created proposal.md and tasks.md for barrier-registry-mvp
+- **Decision:** Formalized brain dump into structured proposal with 29 tasks across 6 phases
+- **Decision:** Following maturity model — Phase 1 is ONE working agent with tests before anything else
+- **Key constraint:** Agent uses Ollama (free) for routine work, Claude reserved for complex reasoning
+- **Revert:** Delete openspec/ directory and this checkpoint entry
+- **Git:** Will commit after this step
 
 ---
