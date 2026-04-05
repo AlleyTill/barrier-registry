@@ -24,6 +24,12 @@ class HealthPolicy(Base):
     fetched_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     policy_id_external = Column(String(200))  # ID from the original source
 
+    # Verification fields
+    verification_status = Column(String(20), default="unverified")  # unverified, machine_verified, user_verified, failed
+    verified_by = Column(String(50))  # "url_checker", "user:alley", agent name, etc.
+    verified_at = Column(DateTime)
+    verification_notes = Column(Text)  # Why it passed/failed, what was checked
+
 
 class WHOIndicator(Base):
     __tablename__ = "who_indicators"
