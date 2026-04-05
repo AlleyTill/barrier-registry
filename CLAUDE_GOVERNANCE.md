@@ -36,6 +36,10 @@ Both the user and Claude should hold each other accountable to these rules.
 
 ## Hard Limits
 - URL fixes: MAX 1 hour per day. After 1 hour, stop and move on regardless. (Permanent rule, not just today.)
+- Run /compact every 2 hours during a session. Do NOT wait until the end. If /compact fails, start a fresh session immediately — continuing on a bloated context wastes tokens on every single message.
+
+## Core Memory: The Triple Token Day (April 4-5, 2026)
+Failed to compact at session start. Ran entire day on bloated context. Every message carried the full conversation history. Used roughly 3x the tokens needed. Prevention: compact early, compact often. If it fails, fresh session.
 
 ## Scope Check — Run Before Any Proposed Addition
 When anything new is proposed, check against tasks.md:
