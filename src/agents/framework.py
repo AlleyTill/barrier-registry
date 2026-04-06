@@ -1,18 +1,24 @@
 """
-TASK-005: 140-line agent framework using Ollama (llama3).
+TASK-005: Agent framework with Ollama (llama3) and Claude backends.
 Simple think → act → observe loop with max_iterations guard.
 Tools query the SQLite database only — no training data answers.
 """
 
 import json
+import os
 import re
 import httpx
+from dotenv import load_dotenv
 from src.database.models import get_session, HealthPolicy, WHOIndicator
 from src.validation.thresholds import evaluate_answer_confidence
 
+load_dotenv(override=True)
+
 OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "llama3"
-MAX_ITERATIONS_DEFAULT = 10
+CLAUDE_URL = "https://api.anthropic.com/v1/messages"
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"  # cheapest for testing the loop
+OLLAMA_MODEL = "llama3"
+MAX_ITERATIONS_DEFAULT = 12
 
 
 # --- TOOLS ---
@@ -72,15 +78,32 @@ def list_categories(country: str = "") -> list[dict]:
     return [{"category": k, "count": v} for k, v in sorted(counts.items())]
 
 
-def check_confidence(records: list[dict]) -> dict:
-    """Evaluate whether retrieved records meet data sufficiency thresholds."""
+def check_confidence(records: list = None) -> dict:
+    """Evaluate whether retrieved records meet data sufficiency thresholds.
+    Accepts list of record dicts OR list of record IDs (will look them up).
+    """
 
     class FakeRecord:
         def __init__(self, d):
             for k, v in d.items():
                 setattr(self, k, v)
 
-    fake = [FakeRecord(r) for r in records]
+    if not records:
+        records = []
+
+    # If passed record IDs (ints), look them up from the database
+    if records and isinstance(records[0], (int, float)):
+        session = get_session()
+        db_records = session.query(HealthPolicy).filter(HealthPolicy.id.in_([int(r) for r in records])).all()
+        session.close()
+        fake = [FakeRecord({
+            "record_id": r.id, "country": r.country, "title": r.title,
+            "original_language": r.original_language, "last_updated": r.last_updated,
+            "verification_status": r.verification_status,
+        }) for r in db_records]
+    else:
+        fake = [FakeRecord(r) for r in records]
+
     result = evaluate_answer_confidence(fake)
     return {"level": result.level, "count": result.record_count, "caveats": result.caveats, "can_answer": result.can_answer}
 
@@ -160,10 +183,61 @@ WORKFLOW:
 4. FINAL ANSWER with record IDs cited for EVERY fact, inferences labeled, gaps listed"""
 
 
+# --- LLM BACKENDS ---
+
+def _call_ollama(messages: list[dict]) -> str:
+    """Call Ollama API and return the assistant's reply."""
+    response = httpx.post(
+        OLLAMA_URL,
+        json={"model": OLLAMA_MODEL, "messages": messages, "stream": False},
+        timeout=300.0,
+    )
+    response.raise_for_status()
+    return response.json()["message"]["content"]
+
+
+def _call_claude(messages: list[dict]) -> str:
+    """Call Claude API and return the assistant's reply."""
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key or api_key.startswith("paste"):
+        raise ValueError("ANTHROPIC_API_KEY not set. Add it to .env file.")
+
+    # Claude API uses system param separately
+    system_msg = ""
+    chat_messages = []
+    for m in messages:
+        if m["role"] == "system":
+            system_msg = m["content"]
+        else:
+            chat_messages.append({"role": m["role"], "content": m["content"]})
+
+    response = httpx.post(
+        CLAUDE_URL,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": CLAUDE_MODEL,
+            "max_tokens": 4096,
+            "system": system_msg,
+            "messages": chat_messages,
+        },
+        timeout=120.0,
+    )
+    response.raise_for_status()
+    return response.json()["content"][0]["text"]
+
+
 # --- AGENT LOOP ---
 
-def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbose: bool = False) -> str:
-    """Run the agent loop: think → act → observe, up to max_iterations."""
+def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbose: bool = False, backend: str = "ollama") -> str:
+    """Run the agent loop: think → act → observe, up to max_iterations.
+    backend: 'ollama' or 'claude'
+    """
+    llm_call = _call_claude if backend == "claude" else _call_ollama
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + TOOL_DESCRIPTIONS},
         {"role": "user", "content": question},
@@ -173,15 +247,9 @@ def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbo
 
     for i in range(max_iterations):
         if verbose:
-            print(f"\n--- Iteration {i + 1}/{max_iterations} ---")
+            print(f"\n--- Iteration {i + 1}/{max_iterations} ({backend}) ---")
 
-        response = httpx.post(
-            OLLAMA_URL,
-            json={"model": MODEL, "messages": messages, "stream": False},
-            timeout=300.0,
-        )
-        response.raise_for_status()
-        reply = response.json()["message"]["content"]
+        reply = llm_call(messages)
 
         if verbose:
             print(f"Agent: {reply[:200]}...")
@@ -218,7 +286,10 @@ def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbo
         else:
             # No tool call and no final answer — nudge the agent
             messages.append({"role": "assistant", "content": reply})
-            messages.append({"role": "user", "content": "Please either call a tool using JSON format or provide your FINAL ANSWER: with citations."})
+            if tool_calls_made >= 6:
+                messages.append({"role": "user", "content": f"You have done {tool_calls_made} searches — that is enough. Please provide your FINAL ANSWER: now with record ID citations for every fact, inferences labeled, gaps listed, and confidence stated."})
+            else:
+                messages.append({"role": "user", "content": "Please either call a tool using JSON format or provide your FINAL ANSWER: with citations."})
 
     return f"Agent reached max iterations ({max_iterations}) without a final answer. Last response:\n{reply}"
 
@@ -239,7 +310,12 @@ def _parse_tool_call(text: str) -> tuple[str, dict] | None:
 
 if __name__ == "__main__":
     import sys
-    q = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "What barriers would a US-licensed doctor face trying to provide telehealth services to a patient in Mexico?"
-    print(f"\nQuestion: {q}\n")
-    answer = run_agent(q, verbose=True)
+    args = sys.argv[1:]
+    use_claude = "--claude" in args
+    args = [a for a in args if a != "--claude"]
+    q = " ".join(args) if args else "What barriers would a US-licensed doctor face trying to provide telehealth services to a patient in Mexico?"
+    b = "claude" if use_claude else "ollama"
+    print(f"\nQuestion: {q}")
+    print(f"Backend: {b}\n")
+    answer = run_agent(q, verbose=True, backend=b)
     print(f"\n{'='*60}\nFINAL ANSWER:\n{'='*60}\n{answer}")

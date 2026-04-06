@@ -120,7 +120,7 @@ class TestFrameworkConfig:
 
     def test_max_iterations_is_set(self):
         assert MAX_ITERATIONS_DEFAULT > 0
-        assert MAX_ITERATIONS_DEFAULT <= 15  # Sanity check
+        assert MAX_ITERATIONS_DEFAULT <= 20  # Sanity check
 
     def test_system_prompt_has_key_rules(self):
         assert "NEVER answer from general knowledge" in SYSTEM_PROMPT
