@@ -5,7 +5,7 @@ Tests the framework structure and tools — does NOT require Ollama running.
 
 import pytest
 from src.agents.framework import (
-    search_policies, search_who_indicators, check_confidence,
+    search_policies, search_who_indicators, check_confidence, list_categories,
     _parse_tool_call, TOOLS, SYSTEM_PROMPT, MAX_ITERATIONS_DEFAULT,
 )
 
@@ -68,6 +68,19 @@ class TestTools:
         assert result["can_answer"] is False
         assert result["level"] == "no_data"
 
+    def test_list_categories_returns_list(self):
+        results = list_categories()
+        assert isinstance(results, list)
+        assert len(results) > 0
+        assert "category" in results[0]
+        assert "count" in results[0]
+
+    def test_list_categories_filters_by_country(self):
+        all_cats = list_categories()
+        usa_cats = list_categories(country="USA")
+        # USA should have fewer or equal categories than all
+        assert len(usa_cats) <= len(all_cats)
+
 
 class TestToolParsing:
     """Test that tool call JSON parsing works correctly."""
@@ -103,10 +116,11 @@ class TestFrameworkConfig:
         assert "search_policies" in TOOLS
         assert "search_who_indicators" in TOOLS
         assert "check_confidence" in TOOLS
+        assert "list_categories" in TOOLS
 
     def test_max_iterations_is_set(self):
         assert MAX_ITERATIONS_DEFAULT > 0
-        assert MAX_ITERATIONS_DEFAULT <= 10  # Sanity check
+        assert MAX_ITERATIONS_DEFAULT <= 15  # Sanity check
 
     def test_system_prompt_has_key_rules(self):
         assert "NEVER answer from general knowledge" in SYSTEM_PROMPT

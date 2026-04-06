@@ -7,9 +7,9 @@
 - [ ] TASK-003: Write tests FIRST (TDD) — agent cites record IDs? says "I don't know" when it should? returns only DB data?
 
 ## Phase 1: One Working Agent
-- [ ] TASK-004: Design character sheet for Agent #1 — US Policy Researcher (Role, Goals, Tools, Constraints, NEVER/ALWAYS, dialogue examples, version number)
-- [ ] TASK-005: Build 140-line agent framework using Ollama (llama3). Must include max_iterations parameter.
-- [ ] TASK-006: Wire SQLite database as an agent tool (search policies, search WHO data)
+- [x] TASK-004: Design character sheet for Agent #1 — US Policy Researcher (Role, Goals, Tools, Constraints, NEVER/ALWAYS, dialogue examples, version number)
+- [x] TASK-005: Build 140-line agent framework using Ollama (llama3). Must include max_iterations parameter.
+- [x] TASK-006: Wire SQLite database as an agent tool (search policies, search WHO data) — completed as part of TASK-005
 - [ ] TASK-007: Run Agent #1 manually — ask real questions, grade output against human baseline using 5 criteria: Grounding, Coverage, Faithfulness, Staleness Awareness, Refusal Quality
 - [ ] TASK-008: Run same questions through Claude and compare outputs (desirability comparison — for future reference, not deployment)
 - [ ] TASK-009: Fix failures, iterate until agent matches human baseline quality with citations

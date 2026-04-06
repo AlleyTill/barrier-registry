@@ -12,7 +12,7 @@ from src.validation.thresholds import evaluate_answer_confidence
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "llama3"
-MAX_ITERATIONS_DEFAULT = 5
+MAX_ITERATIONS_DEFAULT = 10
 
 
 # --- TOOLS ---
@@ -58,6 +58,20 @@ def search_who_indicators(country: str = "", indicator: str = "") -> list[dict]:
     ]
 
 
+def list_categories(country: str = "") -> list[dict]:
+    """List all policy categories in the database, with record counts. Optionally filter by country."""
+    session = get_session()
+    query = session.query(HealthPolicy.category).filter(HealthPolicy.verification_status != "failed")
+    if country:
+        query = query.filter(HealthPolicy.country == country.upper())
+    cats = query.all()
+    session.close()
+    counts = {}
+    for (cat,) in cats:
+        counts[cat] = counts.get(cat, 0) + 1
+    return [{"category": k, "count": v} for k, v in sorted(counts.items())]
+
+
 def check_confidence(records: list[dict]) -> dict:
     """Evaluate whether retrieved records meet data sufficiency thresholds."""
 
@@ -74,13 +88,15 @@ def check_confidence(records: list[dict]) -> dict:
 TOOLS = {
     "search_policies": search_policies,
     "search_who_indicators": search_who_indicators,
+    "list_categories": list_categories,
     "check_confidence": check_confidence,
 }
 
 TOOL_DESCRIPTIONS = """Available tools (call ONE per turn using JSON):
-1. search_policies(country?, category?, keyword?) — Search policy database. country=ISO alpha-3 (USA, CAN, MEX).
+1. search_policies(country?, category?, keyword?) — Search policy database. country=ISO alpha-3 (USA, CAN, MEX). All params optional. Use ONE or TWO filters at a time, not all three — narrow searches miss records.
 2. search_who_indicators(country?, indicator?) — Search WHO health indicators.
-3. check_confidence(records) — Evaluate data sufficiency. Pass the records list from a previous search.
+3. list_categories(country?) — List all policy categories with counts. Call this FIRST to see what's in the database.
+4. check_confidence(records) — Evaluate data sufficiency. Pass the records list from a previous search.
 
 To call a tool, respond with ONLY this JSON (no other text):
 {"tool": "tool_name", "args": {"param": "value"}}
@@ -98,13 +114,50 @@ RULES:
 - Label inferences: "Inference (not directly stated in any record): ..."
 - Flag non-English records: "[language: X — verify with original source]"
 - Flag records 2+ years old with a staleness warning.
-- If 0 records found: say "I don't know" + what you searched + why it's empty.
+- If 0 records found after thorough searching: say "I don't know" + what you searched + why it's empty.
 - If 1-2 records: answer with caveat "coverage may be incomplete."
 - NEVER give legal advice. Say "consult a licensed attorney."
 - List data gaps at the end: what the database does NOT have on this topic.
 - State confidence: HIGH / MODERATE / LOW with reasoning.
 
-WORKFLOW: Search the database (multiple searches if needed), check confidence, then give your final answer."""
+SEARCH STRATEGY — THIS IS CRITICAL:
+- FIRST call list_categories() to see what categories exist.
+- For cross-border questions, you MUST search BOTH countries separately.
+- Do MULTIPLE searches: one per relevant category per country.
+- Use only ONE or TWO filters per search (country+category OR country+keyword). Three filters = too narrow.
+- Do NOT give a FINAL ANSWER until you have searched at least 4 different category/country combinations.
+- A cross-border question needs 6-8 searches minimum.
+
+EXAMPLE SEARCH SEQUENCE for "US doctor telehealth to Mexico":
+  1. list_categories()
+  2. search_policies(country="USA", category="telehealth")
+  3. search_policies(country="MEX", category="telehealth")
+  4. search_policies(country="USA", category="medical_licensing")
+  5. search_policies(country="MEX", category="medical_licensing")
+  6. search_policies(country="USA", category="data_privacy")
+  7. search_policies(country="MEX", category="data_privacy")
+  8. search_policies(country="USA", category="drug_regulation")
+
+OUTPUT FORMAT (you MUST follow this exactly):
+  **1. [Topic]**
+  [Fact from database] [Record ID: 374]
+  *Inference (not directly stated in any record):* [Your reasoning]
+
+  **2. [Next Topic]**
+  ...
+
+  ### What the database does NOT have (gaps):
+  - [gap 1]
+  - [gap 2]
+
+  ### Confidence: MODERATE
+  [Reasoning]
+
+WORKFLOW:
+1. list_categories() to see what's available
+2. Multiple search_policies() calls — at least 4-8 searches across countries and categories
+3. check_confidence() on your combined results
+4. FINAL ANSWER with record IDs cited for EVERY fact, inferences labeled, gaps listed"""
 
 
 # --- AGENT LOOP ---
@@ -115,6 +168,8 @@ def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbo
         {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + TOOL_DESCRIPTIONS},
         {"role": "user", "content": question},
     ]
+    tool_calls_made = 0
+    all_records = []  # Track all retrieved records for grading
 
     for i in range(max_iterations):
         if verbose:
@@ -123,7 +178,7 @@ def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbo
         response = httpx.post(
             OLLAMA_URL,
             json={"model": MODEL, "messages": messages, "stream": False},
-            timeout=120.0,
+            timeout=300.0,
         )
         response.raise_for_status()
         reply = response.json()["message"]["content"]
@@ -131,8 +186,12 @@ def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbo
         if verbose:
             print(f"Agent: {reply[:200]}...")
 
-        # Check for final answer
+        # Check for final answer — but reject if too few searches done
         if "FINAL ANSWER:" in reply:
+            if tool_calls_made < 4:
+                messages.append({"role": "assistant", "content": reply})
+                messages.append({"role": "user", "content": f"You have only done {tool_calls_made} searches. Cross-border questions need at least 4-8 searches across BOTH countries and multiple categories. Keep searching before giving your final answer. Search the other country and more categories."})
+                continue
             return reply.split("FINAL ANSWER:", 1)[1].strip()
 
         # Try to parse tool call
@@ -143,6 +202,10 @@ def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbo
                 if verbose:
                     print(f"Calling: {tool_name}({args})")
                 result = TOOLS[tool_name](**args)
+                tool_calls_made += 1
+                # Track policy records for grading
+                if tool_name == "search_policies" and isinstance(result, list):
+                    all_records.extend(result)
                 result_str = json.dumps(result, default=str)
                 # Cap observation size to avoid blowing context
                 if len(result_str) > 4000:
