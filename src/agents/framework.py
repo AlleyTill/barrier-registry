@@ -1,6 +1,10 @@
 """
-TASK-005: Agent framework with Ollama (llama3) and Claude backends.
-Simple think → act → observe loop with max_iterations guard.
+Agent framework: Plan-Then-Execute architecture.
+Step 1 (Plan): LLM generates a structured search plan from the question + real categories.
+Step 2 (Execute): Framework runs every search deterministically. No LLM involved.
+Step 3 (Synthesize): LLM analyzes all results and writes the cited answer.
+
+Backends: Claude (cloud), Ollama (local).
 Tools query the SQLite database only — no training data answers.
 """
 
@@ -16,9 +20,9 @@ load_dotenv(override=True)
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 CLAUDE_URL = "https://api.anthropic.com/v1/messages"
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"  # cheapest for testing the loop
-OLLAMA_MODEL = "llama3"
-MAX_ITERATIONS_DEFAULT = 12
+CLAUDE_MODEL_PLAN = "claude-haiku-4-5-20251001"  # planning is simple, haiku is fine
+CLAUDE_MODEL_SYNTHESIZE = "claude-opus-4-6"  # synthesis needs the best reasoning
+OLLAMA_MODEL = "qwen3:8b"
 
 
 # --- TOOLS ---
@@ -79,9 +83,7 @@ def list_categories(country: str = "") -> list[dict]:
 
 
 def check_confidence(records: list = None) -> dict:
-    """Evaluate whether retrieved records meet data sufficiency thresholds.
-    Accepts list of record dicts OR list of record IDs (will look them up).
-    """
+    """Evaluate whether retrieved records meet data sufficiency thresholds."""
 
     class FakeRecord:
         def __init__(self, d):
@@ -91,7 +93,6 @@ def check_confidence(records: list = None) -> dict:
     if not records:
         records = []
 
-    # If passed record IDs (ints), look them up from the database
     if records and isinstance(records[0], (int, float)):
         session = get_session()
         db_records = session.query(HealthPolicy).filter(HealthPolicy.id.in_([int(r) for r in records])).all()
@@ -115,55 +116,341 @@ TOOLS = {
     "check_confidence": check_confidence,
 }
 
-TOOL_DESCRIPTIONS = """Available tools (call ONE per turn using JSON):
-1. search_policies(country?, category?, keyword?) — Search policy database. country=ISO alpha-3 (USA, CAN, MEX). All params optional. Use ONE or TWO filters at a time, not all three — narrow searches miss records.
-2. search_who_indicators(country?, indicator?) — Search WHO health indicators.
-3. list_categories(country?) — List all policy categories with counts. Call this FIRST to see what's in the database.
-4. check_confidence(records) — Evaluate data sufficiency. Pass the records list from a previous search.
 
-To call a tool, respond with ONLY this JSON (no other text):
-{"tool": "tool_name", "args": {"param": "value"}}
+# --- LLM BACKENDS ---
 
-When you have enough data, respond with FINAL ANSWER: followed by your answer."""
+def _call_ollama(messages: list[dict], model: str = None, timeout: float = 600.0) -> str:
+    """Call Ollama API and return the assistant's reply."""
+    response = httpx.post(
+        OLLAMA_URL,
+        json={"model": model or OLLAMA_MODEL, "messages": messages, "stream": False},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return response.json()["message"]["content"]
 
 
-# --- SYSTEM PROMPT ---
+def _call_claude(messages: list[dict], model: str = None, thinking: bool = False) -> str:
+    """Call Claude API and return the assistant's reply.
+    If thinking=True, enables extended thinking and returns both thinking and text.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key or api_key.startswith("paste"):
+        raise ValueError("ANTHROPIC_API_KEY not set. Add it to .env file.")
 
-SYSTEM_PROMPT = """You are the US Policy Researcher agent for the Global Healthcare Barrier Registry.
+    system_msg = ""
+    chat_messages = []
+    for m in messages:
+        if m["role"] == "system":
+            system_msg = m["content"]
+        else:
+            chat_messages.append({"role": m["role"], "content": m["content"]})
+
+    request_body = {
+        "model": model or CLAUDE_MODEL_SYNTHESIZE,
+        "max_tokens": 16384,
+        "system": system_msg,
+        "messages": chat_messages,
+    }
+
+    if thinking:
+        request_body["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": 10000,
+        }
+
+    response = httpx.post(
+        CLAUDE_URL,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json=request_body,
+        timeout=300.0,
+    )
+    response.raise_for_status()
+    content_blocks = response.json()["content"]
+
+    thinking_text = ""
+    answer_text = ""
+    for block in content_blocks:
+        if block["type"] == "thinking":
+            thinking_text = block["thinking"]
+        elif block["type"] == "text":
+            answer_text = block["text"]
+
+    if thinking and thinking_text:
+        return thinking_text, answer_text
+    return answer_text
+
+
+# --- STEP 1: PLAN ---
+
+def _get_available_categories() -> dict[str, list[str]]:
+    """Get real categories per country from the database."""
+    session = get_session()
+    results = session.query(HealthPolicy.country, HealthPolicy.category).filter(
+        HealthPolicy.verification_status != "failed"
+    ).distinct().all()
+    session.close()
+
+    by_country = {}
+    for country, category in results:
+        by_country.setdefault(country, []).append(category)
+    for country in by_country:
+        by_country[country] = sorted(set(by_country[country]))
+    return by_country
+
+
+PLAN_PROMPT = """You are a search planner for a healthcare policy database.
+
+Given a user's question and the ACTUAL categories available in the database, generate a search plan.
+
+AVAILABLE CATEGORIES BY COUNTRY:
+{categories}
+
+YOUR JOB: Return a JSON array of searches to execute. Each search is an object with:
+- "country": ISO alpha-3 code (USA, CAN, MEX, GBR)
+- "category": EXACT category name from the list above
+- "keyword": optional keyword to narrow results (use sparingly)
 
 RULES:
-- You can ONLY use data from the database via tools. NEVER answer from general knowledge.
+- ONLY use category names that exist in the list above. Do NOT invent categories.
+- For cross-border questions, search ALL relevant categories in BOTH countries.
+- Include every category that COULD be relevant. More searches is better than missing data.
+- For a cross-border question between 2 countries with 6 categories each, expect 10-16 searches.
+- For a single-country question, expect 3-8 searches.
+- Include keyword searches only when the question mentions specific terms (drug names, act names, etc.)
+
+Return ONLY the JSON array, no other text. Example:
+[
+  {{"country": "USA", "category": "telehealth"}},
+  {{"country": "CAN", "category": "telehealth"}},
+  {{"country": "USA", "category": "medical_licensing"}}
+]"""
+
+
+def _generate_plan(question: str, backend: str = "claude", verbose: bool = False) -> list[dict]:
+    """Step 1: Generate a search plan from the question + real categories."""
+    categories = _get_available_categories()
+    cat_str = "\n".join(
+        f"  {country}: {', '.join(cats)}"
+        for country, cats in sorted(categories.items())
+    )
+
+    messages = [
+        {"role": "system", "content": PLAN_PROMPT.format(categories=cat_str)},
+        {"role": "user", "content": question},
+    ]
+
+    if backend == "claude":
+        reply = _call_claude(messages, model=CLAUDE_MODEL_PLAN)
+    else:
+        reply = _call_ollama(messages)
+
+    if verbose:
+        print(f"[PLAN] Raw planner output:\n{reply}\n")
+
+    # Parse JSON array from reply
+    # Strip markdown code fences if present
+    cleaned = re.sub(r'```json\s*', '', reply)
+    cleaned = re.sub(r'```\s*', '', cleaned)
+    cleaned = cleaned.strip()
+
+    try:
+        plan = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Try to find a JSON array in the response
+        match = re.search(r'\[.*\]', cleaned, re.DOTALL)
+        if match:
+            plan = json.loads(match.group())
+        else:
+            raise ValueError(f"Planner did not return valid JSON: {reply}")
+
+    # Validate plan and inject required categories
+    valid_plan = _validate_plan(plan, categories, verbose, question=question)
+    return valid_plan
+
+
+def _detect_countries(question: str, available_countries: list[str]) -> list[str]:
+    """Detect which countries are referenced in the question."""
+    q = question.lower()
+    # Map common names/keywords to ISO codes
+    country_keywords = {
+        "USA": ["us ", "u.s.", "usa", "united states", "american", "federal"],
+        "CAN": ["canad", "ontario", "quebec", "british columbia", "alberta"],
+        "MEX": ["mexic", "mexico"],
+        "GBR": ["uk ", "u.k.", "gbr", "united kingdom", "britain", "england", "nhs"],
+    }
+    found = []
+    for code, keywords in country_keywords.items():
+        if code in available_countries and any(kw in q for kw in keywords):
+            found.append(code)
+    return found
+
+
+# Categories that MUST be searched for every country in the question.
+# Missing any of these in a healthcare policy query could cause real-world harm.
+# Each entry maps a required concept to all known category names for it across countries.
+REQUIRED_CATEGORIES = [
+    # Drug/substance regulation — different names across countries
+    ["drug_regulation"],
+    # Medical licensing — who can legally practice
+    ["medical_licensing"],
+    # Data privacy — patient information protection
+    ["data_privacy"],
+    # Telehealth — core topic for virtual care queries
+    ["telehealth"],
+    # Cross-border — any category covering cross-border movement
+    ["cross_border", "cross_border_health", "international_health"],
+    # Healthcare access — foundational laws (Canada Health Act, etc.)
+    ["healthcare_access"],
+    # Insurance/coverage — who pays
+    ["insurance"],
+    # Medical liability — malpractice, jurisdictional liability
+    ["medical_liability"],
+]
+
+
+def _validate_plan(plan: list[dict], categories: dict[str, list[str]],
+                    verbose: bool = False, question: str = "") -> list[dict]:
+    """Validate the search plan, then inject required categories the planner missed."""
+    valid = []
+    seen = set()
+
+    for search in plan:
+        country = search.get("country", "").upper()
+        category = search.get("category", "")
+        keyword = search.get("keyword", "")
+
+        if country not in categories:
+            if verbose:
+                print(f"[PLAN] Skipping invalid country: {country}")
+            continue
+
+        if category not in categories[country]:
+            if verbose:
+                print(f"[PLAN] Skipping invalid category: {country}/{category}")
+            continue
+
+        # Deduplicate
+        key = (country, category, keyword)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        valid.append({"country": country, "category": category, "keyword": keyword})
+
+    # Inject required categories for each country in the question
+    countries_in_question = _detect_countries(question, list(categories.keys()))
+    if not countries_in_question:
+        # Fallback: use all countries the planner referenced
+        countries_in_question = list(set(s["country"] for s in valid))
+
+    for country in countries_in_question:
+        if country not in categories:
+            continue
+        for required_group in REQUIRED_CATEGORIES:
+            # Check if any variant from this group is already in the plan
+            already_covered = any(
+                (country, variant, "") in seen or
+                any(s["country"] == country and s["category"] == variant for s in valid)
+                for variant in required_group
+            )
+            if already_covered:
+                continue
+            # Find which variant exists in this country's categories
+            for variant in required_group:
+                if variant in categories[country]:
+                    key = (country, variant, "")
+                    if key not in seen:
+                        seen.add(key)
+                        valid.append({"country": country, "category": variant, "keyword": ""})
+                        if verbose:
+                            print(f"[PLAN] Injected required category: {country}/{variant}")
+                    break
+
+    if verbose:
+        print(f"[PLAN] Validated plan: {len(valid)} searches")
+        for s in valid:
+            kw = f" (keyword: {s['keyword']})" if s.get('keyword') else ""
+            print(f"  -> {s['country']}/{s['category']}{kw}")
+        print()
+
+    return valid
+
+
+# --- STEP 2: EXECUTE ---
+
+def _execute_plan(plan: list[dict], verbose: bool = False) -> dict:
+    """Step 2: Run every search in the plan. No LLM involved."""
+    all_results = {}
+    all_records = []
+
+    for i, search in enumerate(plan):
+        country = search["country"]
+        category = search["category"]
+        keyword = search.get("keyword", "")
+
+        if verbose:
+            kw = f", keyword='{keyword}'" if keyword else ""
+            print(f"[EXECUTE] Search {i+1}/{len(plan)}: {country}/{category}{kw}")
+
+        results = search_policies(country=country, category=category, keyword=keyword)
+        key = f"{country}/{category}"
+        if keyword:
+            key += f" (keyword: {keyword})"
+        all_results[key] = results
+        all_records.extend(results)
+
+        if verbose:
+            print(f"  -> {len(results)} records found")
+
+    # Deduplicate records by record_id
+    seen_ids = set()
+    unique_records = []
+    for r in all_records:
+        if r["record_id"] not in seen_ids:
+            seen_ids.add(r["record_id"])
+            unique_records.append(r)
+
+    if verbose:
+        print(f"\n[EXECUTE] Total: {len(unique_records)} unique records from {len(plan)} searches\n")
+
+    # Run confidence check
+    confidence = check_confidence(unique_records)
+
+    return {
+        "results_by_search": all_results,
+        "all_records": unique_records,
+        "confidence": confidence,
+        "search_count": len(plan),
+    }
+
+
+# --- STEP 3: SYNTHESIZE ---
+
+SYNTHESIZE_PROMPT = """You are the Policy Researcher agent for the Global Healthcare Barrier Registry.
+
+You have been given ALL relevant records from the database for a user's question. Your job is to synthesize a comprehensive, cited answer.
+
+RULES:
+- You can ONLY use the records provided below. NEVER answer from general knowledge.
 - Cite every fact with [Record ID: N]. No citation = don't say it.
 - Label inferences: "Inference (not directly stated in any record): ..."
 - Flag non-English records: "[language: X — verify with original source]"
 - Flag records 2+ years old with a staleness warning.
-- If 0 records found after thorough searching: say "I don't know" + what you searched + why it's empty.
+- If 0 records are relevant: say "I don't know" + why.
 - If 1-2 records: answer with caveat "coverage may be incomplete."
 - NEVER give legal advice. Say "consult a licensed attorney."
-- List data gaps at the end: what the database does NOT have on this topic.
+- List data gaps at the end: what the records do NOT cover on this topic.
+  IMPORTANT: A gap is something the DATABASE DOES NOT HAVE. Do NOT list something as a gap if a record below covers it.
 - State confidence: HIGH / MODERATE / LOW with reasoning.
 
-SEARCH STRATEGY — THIS IS CRITICAL:
-- FIRST call list_categories() to see what categories exist.
-- For cross-border questions, you MUST search BOTH countries separately.
-- Do MULTIPLE searches: one per relevant category per country.
-- Use only ONE or TWO filters per search (country+category OR country+keyword). Three filters = too narrow.
-- Do NOT give a FINAL ANSWER until you have searched at least 4 different category/country combinations.
-- A cross-border question needs 6-8 searches minimum.
-
-EXAMPLE SEARCH SEQUENCE for "US doctor telehealth to Mexico":
-  1. list_categories()
-  2. search_policies(country="USA", category="telehealth")
-  3. search_policies(country="MEX", category="telehealth")
-  4. search_policies(country="USA", category="medical_licensing")
-  5. search_policies(country="MEX", category="medical_licensing")
-  6. search_policies(country="USA", category="data_privacy")
-  7. search_policies(country="MEX", category="data_privacy")
-  8. search_policies(country="USA", category="drug_regulation")
-
-OUTPUT FORMAT (you MUST follow this exactly):
+OUTPUT FORMAT:
   **1. [Topic]**
-  [Fact from database] [Record ID: 374]
+  [Fact from records] [Record ID: N]
   *Inference (not directly stated in any record):* [Your reasoning]
 
   **2. [Next Topic]**
@@ -176,93 +463,147 @@ OUTPUT FORMAT (you MUST follow this exactly):
   ### Confidence: MODERATE
   [Reasoning]
 
-WORKFLOW:
-1. list_categories() to see what's available
-2. Multiple search_policies() calls — at least 4-8 searches across countries and categories
-3. check_confidence() on your combined results
-4. FINAL ANSWER with record IDs cited for EVERY fact, inferences labeled, gaps listed"""
+SEARCHES PERFORMED:
+{searches_performed}
+
+CONFIDENCE CHECK:
+{confidence}
+
+DATABASE RECORDS:
+{records}"""
 
 
-# --- LLM BACKENDS ---
-
-def _call_ollama(messages: list[dict]) -> str:
-    """Call Ollama API and return the assistant's reply."""
-    response = httpx.post(
-        OLLAMA_URL,
-        json={"model": OLLAMA_MODEL, "messages": messages, "stream": False},
-        timeout=300.0,
+def _synthesize(question: str, execution_results: dict, backend: str = "claude", verbose: bool = False) -> str:
+    """Step 3: LLM synthesizes the answer from all retrieved records."""
+    # Format searches performed
+    searches_str = "\n".join(
+        f"  - {key}: {len(results)} records"
+        for key, results in execution_results["results_by_search"].items()
     )
-    response.raise_for_status()
-    return response.json()["message"]["content"]
 
+    # Format records
+    records_str = json.dumps(execution_results["all_records"], default=str, indent=2)
 
-def _call_claude(messages: list[dict]) -> str:
-    """Call Claude API and return the assistant's reply."""
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key or api_key.startswith("paste"):
-        raise ValueError("ANTHROPIC_API_KEY not set. Add it to .env file.")
+    # Format confidence
+    confidence_str = json.dumps(execution_results["confidence"], default=str, indent=2)
 
-    # Claude API uses system param separately
-    system_msg = ""
-    chat_messages = []
-    for m in messages:
-        if m["role"] == "system":
-            system_msg = m["content"]
-        else:
-            chat_messages.append({"role": m["role"], "content": m["content"]})
-
-    response = httpx.post(
-        CLAUDE_URL,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        json={
-            "model": CLAUDE_MODEL,
-            "max_tokens": 4096,
-            "system": system_msg,
-            "messages": chat_messages,
-        },
-        timeout=120.0,
+    system = SYNTHESIZE_PROMPT.format(
+        searches_performed=searches_str,
+        confidence=confidence_str,
+        records=records_str,
     )
-    response.raise_for_status()
-    return response.json()["content"][0]["text"]
-
-
-# --- AGENT LOOP ---
-
-def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbose: bool = False, backend: str = "ollama") -> str:
-    """Run the agent loop: think → act → observe, up to max_iterations.
-    backend: 'ollama' or 'claude'
-    """
-    llm_call = _call_claude if backend == "claude" else _call_ollama
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + TOOL_DESCRIPTIONS},
+        {"role": "system", "content": system},
+        {"role": "user", "content": question},
+    ]
+
+    if verbose:
+        print("[SYNTHESIZE] Sending to LLM for analysis...")
+
+    if backend == "claude":
+        result = _call_claude(messages, model=CLAUDE_MODEL_SYNTHESIZE, thinking=True)
+        if isinstance(result, tuple):
+            thinking_text, reply = result
+            if verbose and thinking_text:
+                print(f"\n--- THINKING ---\n{thinking_text}\n--- END THINKING ---\n")
+        else:
+            reply = result
+    else:
+        reply = _call_ollama(messages)
+
+    return reply
+
+
+# --- MAIN ENTRY POINT ---
+
+def run_agent(question: str, verbose: bool = False, backend: str = "claude") -> str:
+    """Run the plan-then-execute agent pipeline.
+    backend: 'claude', 'ollama', or 'hybrid' (Ollama plans, Claude synthesizes)
+    """
+    plan_backend = backend
+    synth_backend = backend
+
+    if backend == "hybrid":
+        plan_backend = "ollama"
+        synth_backend = "claude"
+
+    if verbose:
+        print(f"{'='*60}")
+        print(f"PLAN-THEN-EXECUTE PIPELINE")
+        if backend == "hybrid":
+            print(f"Plan: Ollama ({OLLAMA_MODEL}) | Synthesis: Claude ({CLAUDE_MODEL_SYNTHESIZE})")
+        else:
+            print(f"Backend: {backend}")
+        print(f"Question: {question}")
+        print(f"{'='*60}\n")
+
+    # Step 1: Plan
+    if verbose:
+        print("--- STEP 1: PLANNING ---")
+    plan = _generate_plan(question, backend=plan_backend, verbose=verbose)
+
+    if not plan:
+        return "Planning failed: no valid searches generated. Check that the question references countries in the database."
+
+    # Step 2: Execute
+    if verbose:
+        print("--- STEP 2: EXECUTING SEARCHES ---")
+    results = _execute_plan(plan, verbose=verbose)
+
+    # Step 3: Synthesize
+    if verbose:
+        print("--- STEP 3: SYNTHESIZING ANSWER ---")
+    answer = _synthesize(question, results, backend=synth_backend, verbose=verbose)
+
+    return answer
+
+
+# --- LEGACY REACT LOOP (kept for comparison testing) ---
+
+def run_agent_react(question: str, max_iterations: int = 12, verbose: bool = False, backend: str = "ollama") -> str:
+    """Legacy ReAct loop. Kept for A/B comparison with plan-then-execute."""
+    llm_call = _call_claude if backend == "claude" else _call_ollama
+
+    react_system = """You are the US Policy Researcher agent for the Global Healthcare Barrier Registry.
+
+RULES:
+- You can ONLY use data from the database via tools. NEVER answer from general knowledge.
+- Cite every fact with [Record ID: N]. No citation = don't say it.
+- Label inferences: "Inference (not directly stated in any record): ..."
+- Flag non-English records: "[language: X — verify with original source]"
+- Flag records 2+ years old with a staleness warning.
+- If 0 records found: say "I don't know" + what you searched.
+- NEVER give legal advice. Say "consult a licensed attorney."
+- List data gaps at the end.
+- State confidence: HIGH / MODERATE / LOW with reasoning.
+
+Available tools (call ONE per turn using JSON):
+1. search_policies(country?, category?, keyword?) — Search policy database.
+2. search_who_indicators(country?, indicator?) — Search WHO health indicators.
+3. list_categories(country?) — List policy categories with counts.
+4. check_confidence(records) — Evaluate data sufficiency.
+
+To call a tool: {"tool": "tool_name", "args": {"param": "value"}}
+When done: FINAL ANSWER: followed by your answer."""
+
+    messages = [
+        {"role": "system", "content": react_system},
         {"role": "user", "content": question},
     ]
     tool_calls_made = 0
-    all_records = []  # Track all retrieved records for grading
 
     for i in range(max_iterations):
         if verbose:
             print(f"\n--- Iteration {i + 1}/{max_iterations} ({backend}) ---")
 
         reply = llm_call(messages)
-
         if verbose:
             print(f"Agent: {reply[:200]}...")
 
-        # Check for final answer — but reject if too few searches done
         if "FINAL ANSWER:" in reply:
-            if tool_calls_made < 4:
-                messages.append({"role": "assistant", "content": reply})
-                messages.append({"role": "user", "content": f"You have only done {tool_calls_made} searches. Cross-border questions need at least 4-8 searches across BOTH countries and multiple categories. Keep searching before giving your final answer. Search the other country and more categories."})
-                continue
             return reply.split("FINAL ANSWER:", 1)[1].strip()
 
-        # Try to parse tool call
         tool_call = _parse_tool_call(reply)
         if tool_call:
             tool_name, args = tool_call
@@ -271,11 +612,7 @@ def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbo
                     print(f"Calling: {tool_name}({args})")
                 result = TOOLS[tool_name](**args)
                 tool_calls_made += 1
-                # Track policy records for grading
-                if tool_name == "search_policies" and isinstance(result, list):
-                    all_records.extend(result)
                 result_str = json.dumps(result, default=str)
-                # Cap observation size to avoid blowing context
                 if len(result_str) > 4000:
                     result_str = result_str[:4000] + f"... (truncated, {len(result)} total results)"
                 messages.append({"role": "assistant", "content": reply})
@@ -284,19 +621,14 @@ def run_agent(question: str, max_iterations: int = MAX_ITERATIONS_DEFAULT, verbo
                 messages.append({"role": "assistant", "content": reply})
                 messages.append({"role": "user", "content": f"Error: Unknown tool '{tool_name}'. Available: {list(TOOLS.keys())}"})
         else:
-            # No tool call and no final answer — nudge the agent
             messages.append({"role": "assistant", "content": reply})
-            if tool_calls_made >= 6:
-                messages.append({"role": "user", "content": f"You have done {tool_calls_made} searches — that is enough. Please provide your FINAL ANSWER: now with record ID citations for every fact, inferences labeled, gaps listed, and confidence stated."})
-            else:
-                messages.append({"role": "user", "content": "Please either call a tool using JSON format or provide your FINAL ANSWER: with citations."})
+            messages.append({"role": "user", "content": "Please call a tool or provide your FINAL ANSWER: with citations."})
 
-    return f"Agent reached max iterations ({max_iterations}) without a final answer. Last response:\n{reply}"
+    return f"Agent reached max iterations ({max_iterations}) without a final answer."
 
 
 def _parse_tool_call(text: str) -> tuple[str, dict] | None:
     """Extract a tool call JSON from the agent's response."""
-    # Find JSON objects that contain "tool" — handle one level of nested braces for args
     matches = re.findall(r'\{[^{}]*"tool"[^{}]*(?:\{[^{}]*\}[^{}]*)?\}', text)
     for match in matches:
         try:
@@ -310,12 +642,35 @@ def _parse_tool_call(text: str) -> tuple[str, dict] | None:
 
 if __name__ == "__main__":
     import sys
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = sys.argv[1:]
+
     use_claude = "--claude" in args
-    args = [a for a in args if a != "--claude"]
-    q = " ".join(args) if args else "What barriers would a US-licensed doctor face trying to provide telehealth services to a patient in Mexico?"
-    b = "claude" if use_claude else "ollama"
+    use_hybrid = "--hybrid" in args
+    use_local = "--local" in args
+    use_react = "--react" in args
+    args = [a for a in args if a not in ("--claude", "--hybrid", "--local", "--react")]
+
+    q = " ".join(args) if args else "What barriers would a US-licensed doctor face trying to provide telehealth services to a patient in Canada?"
+
+    if use_claude:
+        b = "claude"
+    elif use_local:
+        b = "ollama"
+    else:
+        # Hybrid is the default — best quality (local plan + cloud synthesis)
+        b = "hybrid"
+
+    mode_label = "react (legacy)" if use_react else "plan-then-execute"
+    if b == "hybrid":
+        mode_label += f" | Plan: {OLLAMA_MODEL} | Synthesis: {CLAUDE_MODEL_SYNTHESIZE}"
+
     print(f"\nQuestion: {q}")
-    print(f"Backend: {b}\n")
-    answer = run_agent(q, verbose=True, backend=b)
+    print(f"Mode: {mode_label}\n")
+
+    if use_react:
+        answer = run_agent_react(q, verbose=True, backend=b)
+    else:
+        answer = run_agent(q, verbose=True, backend=b)
+
     print(f"\n{'='*60}\nFINAL ANSWER:\n{'='*60}\n{answer}")

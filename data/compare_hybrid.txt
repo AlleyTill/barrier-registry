@@ -1,0 +1,66 @@
+# US Federal Rules for Prescribing Controlled Substances via Telehealth
+
+---
+
+**1. The Ryan Haight Online Pharmacy Consumer Protection Act — Baseline Federal Requirement**
+
+Federal law (the Ryan Haight Act) requires **at least one in-person evaluation** before a provider may prescribe controlled substances online. [Record ID: 373] This is the standing legal baseline that governs telehealth prescribing of controlled substances nationwide.
+
+However, COVID-era telehealth flexibilities have **temporarily waived** this in-person requirement. [Record ID: 373] The DEA is working on a permanent pathway — a **Special Registration for Telemedicine** — that would allow qualified providers to prescribe controlled substances via telehealth without the in-person visit, but this registration is still pending and has not been finalized. [Record ID: 373]
+
+---
+
+**2. DEA/HHS Temporary Extension of Telehealth Prescribing Flexibilities (4th Temporary Rule)**
+
+The DEA and HHS extended telehealth flexibilities for prescribing **Schedule II–V controlled substances through December 31, 2026**. [Record ID: 371] Key provisions of this extension include:
+
+- **All DEA-registered providers** may prescribe controlled substances via telehealth. [Record ID: 371]
+- This applies **regardless of when the provider-patient relationship was formed** — meaning patients whose care began entirely via telehealth during the pandemic are still covered. [Record ID: 371]
+- The extension is explicitly intended to **buy time** for the DEA to finalize the permanent Special Registration for Telemedicine. [Record ID: 371]
+
+⚠️ *Note: This is the 4th temporary rule. The record is dated 12/30/2025 and describes a policy valid through the end of 2026. Verify current status, as further extensions or permanent rulemaking could supersede it.*
+
+---
+
+**3. Congressional Medicare Telehealth Extensions — Supporting Framework**
+
+Congress extended broader **Medicare telehealth flexibilities through December 31, 2027** via the Consolidated Appropriations Act 2026 (H.R. 7148, signed Feb 3, 2026). [Record ID: 370] While this is primarily a Medicare reimbursement measure, it includes:
+
+- **Waiver of in-person requirements** for behavioral telehealth (relevant to many controlled substance prescribing scenarios, e.g., psychiatric medications). [Record ID: 370]
+- Allowing the **patient's home as an originating site** and **geographic waivers**. [Record ID: 370]
+- **Expanded clinician eligibility**. [Record ID: 370]
+
+*Inference (not directly stated in any record):* The Medicare telehealth extension and the DEA controlled substance extension are complementary but separate authorities. A provider needs both the *legal authority* to prescribe (DEA rules) and a *payment mechanism* (Medicare/payer rules) for the encounter to be fully viable.
+
+---
+
+**4. Proposed Permanent Solution: CONNECT for Health Act**
+
+The **CONNECT for Health Act** has been proposed in Congress to make Medicare telehealth flexibilities **permanent**, removing geographic and originating site restrictions. [Record ID: 372] As of January 2026, this legislation has **not yet been enacted**. [Record ID: 372] If passed, it would reduce the need for recurring temporary extensions.
+
+---
+
+**5. Interaction with State Prescribing Rules**
+
+States vary significantly on telehealth prescribing requirements. [Record ID: 389] Some states require an initial in-person visit before prescribing, others allow prescribing after a video-only encounter, and some permit audio-only prescribing for non-controlled substances. [Record ID: 389] **Controlled substance prescribing is further governed by the federal Ryan Haight Act and DEA temporary flexibilities**, meaning providers must comply with *both* federal and state rules. [Record ID: 389]
+
+For example, **Texas** requires an existing provider-patient relationship or an initial video visit for telehealth prescribing. [Record ID: 378]
+
+---
+
+**6. HIPAA Compliance Requirements for Telehealth Platforms**
+
+Providers prescribing controlled substances via telehealth must use **HIPAA-compliant communication platforms**. The OCR enforcement discretion for non-compliant platforms (issued during COVID) **has expired**; providers must now use fully compliant technology. [Record ID: 375]
+
+---
+
+### What the database does NOT have (gaps):
+- **Specific requirements of the pending DEA Special Registration for Telemedicine** (e.g., provider qualifications, application process, restrictions by schedule)
+- **Detailed state-by-state controlled substance telehealth prescribing rules** (only a national summary and a few state examples are included)
+- **Rules specific to opioid treatment programs (OTPs)** and buprenorphine prescribing for opioid use disorder via telehealth
+- **Enforcement actions or case law** related to telehealth controlled substance prescribing violations
+- **VA or DoD-specific** telehealth prescribing authorities (federal providers operating under different frameworks)
+- **Penalties for non-compliance** with the Ryan Haight Act
+
+### Confidence: HIGH
+Multiple, recent, directly relevant records address this question from complementary angles (DEA, Congress, HHS, state-level summaries). The core federal rules — the Ryan Haight Act baseline, the DEA temporary extension through 2026, and the Medicare telehealth extension through 2027 — are well-documented. All records are in English and most are from 2025–2026. However, all records are unverified, and this is a rapidly evolving policy area. **For legal obligations specific to your practice, consult a licensed attorney.**

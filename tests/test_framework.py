@@ -6,7 +6,9 @@ Tests the framework structure and tools — does NOT require Ollama running.
 import pytest
 from src.agents.framework import (
     search_policies, search_who_indicators, check_confidence, list_categories,
-    _parse_tool_call, TOOLS, SYSTEM_PROMPT, MAX_ITERATIONS_DEFAULT,
+    _parse_tool_call, TOOLS, SYNTHESIZE_PROMPT, PLAN_PROMPT,
+    _get_available_categories, _validate_plan, _detect_countries,
+    REQUIRED_CATEGORIES,
 )
 
 
@@ -118,13 +120,89 @@ class TestFrameworkConfig:
         assert "check_confidence" in TOOLS
         assert "list_categories" in TOOLS
 
-    def test_max_iterations_is_set(self):
-        assert MAX_ITERATIONS_DEFAULT > 0
-        assert MAX_ITERATIONS_DEFAULT <= 20  # Sanity check
+    def test_synthesize_prompt_has_key_rules(self):
+        assert "NEVER answer from general knowledge" in SYNTHESIZE_PROMPT
+        assert "Record ID" in SYNTHESIZE_PROMPT
+        assert "I don't know" in SYNTHESIZE_PROMPT
+        assert "legal advice" in SYNTHESIZE_PROMPT.lower()
+        assert "confidence" in SYNTHESIZE_PROMPT.lower()
 
-    def test_system_prompt_has_key_rules(self):
-        assert "NEVER answer from general knowledge" in SYSTEM_PROMPT
-        assert "Record ID" in SYSTEM_PROMPT
-        assert "I don't know" in SYSTEM_PROMPT
-        assert "legal advice" in SYSTEM_PROMPT.lower()
-        assert "confidence" in SYSTEM_PROMPT.lower()
+    def test_plan_prompt_has_key_rules(self):
+        assert "ONLY use category names" in PLAN_PROMPT
+        assert "cross-border" in PLAN_PROMPT.lower()
+        assert "JSON" in PLAN_PROMPT
+
+    def test_get_available_categories(self):
+        cats = _get_available_categories()
+        assert isinstance(cats, dict)
+        assert "USA" in cats
+        assert "CAN" in cats
+        assert len(cats["USA"]) > 0
+
+    def test_validate_plan_rejects_invalid_country(self):
+        categories = {"USA": ["telehealth"], "CAN": ["telehealth"]}
+        plan = [{"country": "ZZZ", "category": "telehealth"}]
+        valid = _validate_plan(plan, categories, question="test")
+        # May still inject required categories for countries detected in question
+        assert not any(s["country"] == "ZZZ" for s in valid)
+
+    def test_validate_plan_rejects_invalid_category(self):
+        categories = {"USA": ["telehealth"], "CAN": ["telehealth"]}
+        plan = [{"country": "USA", "category": "fake_category"}]
+        valid = _validate_plan(plan, categories, question="test")
+        assert not any(s["category"] == "fake_category" for s in valid)
+
+    def test_validate_plan_accepts_valid_search(self):
+        categories = {"USA": ["telehealth"], "CAN": ["telehealth"]}
+        plan = [{"country": "USA", "category": "telehealth"}]
+        valid = _validate_plan(plan, categories, question="test")
+        assert any(s["country"] == "USA" and s["category"] == "telehealth" for s in valid)
+
+    def test_validate_plan_deduplicates(self):
+        categories = {"USA": ["telehealth"]}
+        plan = [
+            {"country": "USA", "category": "telehealth"},
+            {"country": "USA", "category": "telehealth"},
+        ]
+        valid = _validate_plan(plan, categories, question="test")
+        telehealth_count = sum(1 for s in valid if s["category"] == "telehealth")
+        assert telehealth_count == 1
+
+    def test_validate_plan_injects_required_drug_regulation(self):
+        """drug_regulation must be searched even if planner omits it."""
+        categories = {"CAN": ["telehealth", "drug_regulation", "medical_licensing"]}
+        plan = [{"country": "CAN", "category": "telehealth"}]
+        valid = _validate_plan(plan, categories, question="telehealth in Canada")
+        cats = [s["category"] for s in valid]
+        assert "drug_regulation" in cats
+
+    def test_validate_plan_injects_cross_border_variants(self):
+        """cross_border and cross_border_health are equivalent — inject whichever exists."""
+        categories = {"MEX": ["telehealth", "cross_border_health"]}
+        plan = [{"country": "MEX", "category": "telehealth"}]
+        valid = _validate_plan(plan, categories, question="telehealth in Mexico")
+        cats = [s["category"] for s in valid]
+        assert "cross_border_health" in cats
+
+    def test_validate_plan_no_duplicate_injection(self):
+        """Don't inject a required category if the planner already included it."""
+        categories = {"USA": ["telehealth", "drug_regulation"]}
+        plan = [
+            {"country": "USA", "category": "telehealth"},
+            {"country": "USA", "category": "drug_regulation"},
+        ]
+        valid = _validate_plan(plan, categories, question="US telehealth")
+        drug_count = sum(1 for s in valid if s["category"] == "drug_regulation")
+        assert drug_count == 1
+
+    def test_detect_countries_us_canada(self):
+        available = ["USA", "CAN", "MEX", "GBR"]
+        countries = _detect_countries("US doctor telehealth to Canada", available)
+        assert "USA" in countries
+        assert "CAN" in countries
+        assert "MEX" not in countries
+
+    def test_detect_countries_mexico(self):
+        available = ["USA", "CAN", "MEX", "GBR"]
+        countries = _detect_countries("barriers for telehealth in Mexico", available)
+        assert "MEX" in countries
