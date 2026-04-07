@@ -952,6 +952,47 @@ def run_agent(question: str, verbose: bool = False, backend: str = "claude") -> 
     return answer
 
 
+def run_agent_detailed(question: str, verbose: bool = False, backend: str = "claude") -> dict:
+    """Run the plan-then-execute pipeline and return structured results for UI consumption.
+    Returns dict with: question, backend, plan, execution_results, answer, countries, confidence.
+    """
+    plan_backend = backend
+    synth_backend = backend
+    if backend == "hybrid":
+        plan_backend = "ollama"
+        synth_backend = "claude"
+
+    # Step 1: Plan
+    plan = _generate_plan(question, backend=plan_backend, verbose=verbose)
+    if not plan:
+        return {
+            "question": question, "backend": backend, "plan": [],
+            "execution_results": {}, "answer": "Planning failed: no valid searches generated.",
+            "countries": [], "confidence": {"level": "no_data", "can_answer": False},
+        }
+
+    # Step 2: Execute
+    results = _execute_plan(plan, verbose=verbose, question=question)
+
+    # Step 3: Synthesize
+    answer = _synthesize(question, results, backend=synth_backend, verbose=verbose)
+
+    countries = sorted(set(r["country"] for r in results.get("all_records", [])))
+
+    return {
+        "question": question,
+        "backend": backend,
+        "plan": plan,
+        "execution_results": results,
+        "answer": answer,
+        "countries": countries,
+        "confidence": results.get("confidence", {}),
+        "record_count": len(results.get("all_records", [])),
+        "search_count": results.get("search_count", 0),
+        "is_cross_border": len(countries) >= 2,
+    }
+
+
 # --- LEGACY REACT LOOP (kept for comparison testing) ---
 
 def run_agent_react(question: str, max_iterations: int = 12, verbose: bool = False, backend: str = "ollama") -> str:
