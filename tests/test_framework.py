@@ -592,8 +592,51 @@ class TestCrossBorderComparison:
     def test_detect_countries_all_three(self):
         available = ["USA", "CAN", "MEX", "GBR"]
         countries = _detect_countries(
-            "Compare telehealth rules across the United States, Canada, and Mexico", available
+            "Compare telehealth rules across US, Canada, and Mexico", available
         )
         assert "USA" in countries
         assert "CAN" in countries
         assert "MEX" in countries
+
+    def test_validate_plan_injects_for_three_countries(self):
+        """A US-Canada-Mexico question must get required categories for ALL THREE."""
+        categories = _get_available_categories()
+        plan = [{"country": "USA", "category": "telehealth"}]
+        valid = _validate_plan(plan, categories,
+            question="Compare telehealth rules across US, Canada, and Mexico")
+        usa_cats = [s["category"] for s in valid if s["country"] == "USA"]
+        can_cats = [s["category"] for s in valid if s["country"] == "CAN"]
+        mex_cats = [s["category"] for s in valid if s["country"] == "MEX"]
+        # All three countries must have required categories
+        assert len(usa_cats) >= 1, "USA must have categories"
+        assert len(can_cats) >= 3, f"CAN only has {len(can_cats)} categories, need >= 3"
+        assert len(mex_cats) >= 3, f"MEX only has {len(mex_cats)} categories, need >= 3"
+        # Telehealth must be in all three
+        assert "telehealth" in can_cats, "CAN missing telehealth"
+        assert "telehealth" in mex_cats, "MEX missing telehealth"
+
+    def test_three_way_cross_border_detection(self):
+        """Three countries in records = cross-border."""
+        results = {
+            "all_records": [
+                {"country": "USA", "record_id": 1},
+                {"country": "CAN", "record_id": 2},
+                {"country": "MEX", "record_id": 3},
+            ]
+        }
+        assert _is_cross_border(results) is True
+        counts = _get_country_counts(results["all_records"])
+        assert len(counts) == 3
+
+    def test_detect_countries_handles_punctuation(self):
+        """US followed by comma, period, or question mark must still match."""
+        available = ["USA", "CAN", "MEX", "GBR"]
+        for q in [
+            "US, Canada",
+            "US. Canada.",
+            "What about the US?",
+            "US and Canada and Mexico!",
+            "telehealth in the US; what about Canada?",
+        ]:
+            countries = _detect_countries(q, available)
+            assert "USA" in countries, f"Failed to detect USA in: '{q}'"

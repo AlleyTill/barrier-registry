@@ -468,16 +468,27 @@ def _generate_plan(question: str, backend: str = "claude", verbose: bool = False
 def _detect_countries(question: str, available_countries: list[str]) -> list[str]:
     """Detect which countries are referenced in the question."""
     q = question.lower()
+    # Pad with spaces so word-boundary keywords match at start/end of string
+    q_padded = f" {q} "
+    # Replace common punctuation with spaces so "US," "US." "US?" all match "us "
+    for ch in ",.?!;:()[]{}\"'":
+        q_padded = q_padded.replace(ch, " ")
+    # Normalize multiple spaces
+    while "  " in q_padded:
+        q_padded = q_padded.replace("  ", " ")
+
     # Map common names/keywords to ISO codes
     country_keywords = {
         "USA": ["us ", "u.s.", "usa", "united states", "american", "federal"],
-        "CAN": ["canad", "ontario", "quebec", "british columbia", "alberta"],
+        "CAN": ["canad", "ontario", "quebec", "british columbia", "alberta",
+                "saskatchewan", "manitoba", "nova scotia", "new brunswick",
+                "newfoundland", "prince edward"],
         "MEX": ["mexic", "mexico"],
         "GBR": ["uk ", "u.k.", "gbr", "united kingdom", "britain", "england", "nhs"],
     }
     found = []
     for code, keywords in country_keywords.items():
-        if code in available_countries and any(kw in q for kw in keywords):
+        if code in available_countries and any(kw in q_padded for kw in keywords):
             found.append(code)
     return found
 
@@ -714,13 +725,12 @@ For each policy area relevant to the question (e.g., licensing, telehealth rules
 prescribing/controlled substances, liability, insurance/coverage):
 
 1. **[Policy Area]**
-   - **{country_a}:** [State the rule with citation] [Record ID: N]
-   - **{country_b}:** [State the rule with citation] [Record ID: N]
-   - **Barrier:** [What specific conflict, gap, or mismatch exists between these two systems]
+{country_bullets}
+   - **Barrier:** [What specific conflict, gap, or mismatch exists between these systems]
    - **Classification:** [One of: PROHIBITION — explicitly banned in one jurisdiction |
      REGULATORY GAP — one country has no rule on this topic |
-     CONFLICT — both countries have rules that contradict each other |
-     ASYMMETRY — one country regulates this area, the other doesn't]
+     CONFLICT — countries have rules that contradict each other |
+     ASYMMETRY — one country regulates this area, another doesn't]
 
 If no records exist for one country on a policy area, state: "No records in database for
 [Country] on [topic]" — do NOT infer policy from silence. Absence of a record does NOT mean
@@ -731,7 +741,7 @@ After the comparison sections, include:
 ### Barrier Summary
 | # | Barrier | Classification | Countries |
 |---|---------|---------------|-----------|
-| 1 | [Short description] | PROHIBITION / REGULATORY GAP / CONFLICT / ASYMMETRY | {country_a} vs {country_b} |
+| 1 | [Short description] | PROHIBITION / REGULATORY GAP / CONFLICT / ASYMMETRY | [which countries] |
 
 ### Data Asymmetry Notice
 {asymmetry_notice}
@@ -834,12 +844,17 @@ def _build_cross_border_section(execution_results: dict) -> str:
 
     counts_str = ", ".join(f"{c}: {n}" for c, n in sorted(country_counts.items()))
 
+    # Build per-country bullet template for the comparison format
+    country_bullets = "\n".join(
+        f"   - **{c}:** [State the rule with citation] [Record ID: N]"
+        for c in countries
+    )
+
     return CROSS_BORDER_PROMPT.format(
         countries=", ".join(countries),
         country_counts=counts_str,
         country_contexts=country_contexts,
-        country_a=countries[0] if len(countries) >= 1 else "Country A",
-        country_b=countries[1] if len(countries) >= 2 else "Country B",
+        country_bullets=country_bullets,
         asymmetry_notice=asymmetry_notice,
     )
 
@@ -952,9 +967,11 @@ def run_agent(question: str, verbose: bool = False, backend: str = "claude") -> 
     return answer
 
 
-def run_agent_detailed(question: str, verbose: bool = False, backend: str = "claude") -> dict:
+def run_agent_detailed(question: str, verbose: bool = False, backend: str = "claude",
+                       on_step=None) -> dict:
     """Run the plan-then-execute pipeline and return structured results for UI consumption.
     Returns dict with: question, backend, plan, execution_results, answer, countries, confidence.
+    on_step: optional callback(step_name, detail) for progress reporting.
     """
     plan_backend = backend
     synth_backend = backend
@@ -962,7 +979,12 @@ def run_agent_detailed(question: str, verbose: bool = False, backend: str = "cla
         plan_backend = "ollama"
         synth_backend = "claude"
 
+    def _report(step, detail=""):
+        if on_step:
+            on_step(step, detail)
+
     # Step 1: Plan
+    _report("plan", "Generating search plan...")
     plan = _generate_plan(question, backend=plan_backend, verbose=verbose)
     if not plan:
         return {
@@ -970,12 +992,18 @@ def run_agent_detailed(question: str, verbose: bool = False, backend: str = "cla
             "execution_results": {}, "answer": "Planning failed: no valid searches generated.",
             "countries": [], "confidence": {"level": "no_data", "can_answer": False},
         }
+    _report("plan_done", f"{len(plan)} searches planned")
 
     # Step 2: Execute
+    _report("execute", f"Searching {len(plan)} categories + semantic...")
     results = _execute_plan(plan, verbose=verbose, question=question)
+    record_count = len(results.get("all_records", []))
+    _report("execute_done", f"{record_count} records found")
 
     # Step 3: Synthesize
+    _report("synthesize", "Analyzing records and identifying barriers...")
     answer = _synthesize(question, results, backend=synth_backend, verbose=verbose)
+    _report("synthesize_done", "Analysis complete")
 
     countries = sorted(set(r["country"] for r in results.get("all_records", [])))
 
@@ -987,7 +1015,7 @@ def run_agent_detailed(question: str, verbose: bool = False, backend: str = "cla
         "answer": answer,
         "countries": countries,
         "confidence": results.get("confidence", {}),
-        "record_count": len(results.get("all_records", [])),
+        "record_count": record_count,
         "search_count": results.get("search_count", 0),
         "is_cross_border": len(countries) >= 2,
     }

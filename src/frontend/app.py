@@ -79,12 +79,24 @@ for i, ex in enumerate(EXAMPLES):
 
 # --- Run Pipeline ---
 if run_button and question.strip():
-    # Step 1: Planning
     with st.status("Running barrier analysis...", expanded=True) as status:
-        st.write("**Step 1:** Planning searches...")
+        progress_area = st.empty()
         start = time.time()
 
-        result = run_agent_detailed(question, verbose=False, backend=backend)
+        def on_step(step, detail):
+            icons = {
+                "plan": "1/3 Planning",
+                "plan_done": "1/3 Planning",
+                "execute": "2/3 Searching",
+                "execute_done": "2/3 Searching",
+                "synthesize": "3/3 Synthesizing",
+                "synthesize_done": "3/3 Complete",
+            }
+            label = icons.get(step, step)
+            elapsed = time.time() - start
+            progress_area.markdown(f"**{label}** ({elapsed:.0f}s) — {detail}")
+
+        result = run_agent_detailed(question, verbose=False, backend=backend, on_step=on_step)
 
         elapsed = time.time() - start
         status.update(label=f"Analysis complete ({elapsed:.1f}s)", state="complete")
