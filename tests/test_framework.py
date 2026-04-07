@@ -11,6 +11,8 @@ from src.agents.framework import (
     _get_available_categories, _validate_plan, _detect_countries,
     REQUIRED_CATEGORIES, _filter_by_specialty, _detect_question_specialties,
     _tag_specialties, MAX_RECORDS_PER_CATEGORY, SPECIALTY_MAP,
+    COUNTRY_CONTEXT, CROSS_BORDER_PROMPT,
+    _is_cross_border, _get_country_counts, _build_cross_border_section,
 )
 
 
@@ -378,3 +380,211 @@ class TestSemanticSearch:
             f"Cross-country semantic search only returned {countries}. "
             f"Expected multiple countries."
         )
+
+
+class TestCrossBorderDetection:
+    """Test cross-border detection, prompt assembly, and country context."""
+
+    def test_is_cross_border_true_for_two_countries(self):
+        """Records from 2 countries = cross-border."""
+        results = {
+            "all_records": [
+                {"country": "USA", "record_id": 1},
+                {"country": "CAN", "record_id": 2},
+            ]
+        }
+        assert _is_cross_border(results) is True
+
+    def test_is_cross_border_false_for_single_country(self):
+        """Records from 1 country = not cross-border."""
+        results = {
+            "all_records": [
+                {"country": "USA", "record_id": 1},
+                {"country": "USA", "record_id": 2},
+            ]
+        }
+        assert _is_cross_border(results) is False
+
+    def test_is_cross_border_false_for_empty(self):
+        """No records = not cross-border."""
+        assert _is_cross_border({"all_records": []}) is False
+        assert _is_cross_border({}) is False
+
+    def test_is_cross_border_true_for_three_countries(self):
+        """Records from 3 countries = cross-border."""
+        results = {
+            "all_records": [
+                {"country": "USA", "record_id": 1},
+                {"country": "CAN", "record_id": 2},
+                {"country": "MEX", "record_id": 3},
+            ]
+        }
+        assert _is_cross_border(results) is True
+
+    def test_get_country_counts(self):
+        records = [
+            {"country": "USA"}, {"country": "USA"}, {"country": "USA"},
+            {"country": "CAN"},
+        ]
+        counts = _get_country_counts(records)
+        assert counts["USA"] == 3
+        assert counts["CAN"] == 1
+
+    def test_country_context_covers_all_db_countries(self):
+        """COUNTRY_CONTEXT must have an entry for every country in the database."""
+        categories = _get_available_categories()
+        for country in categories:
+            assert country in COUNTRY_CONTEXT, (
+                f"COUNTRY_CONTEXT missing entry for {country} — "
+                f"the synthesis prompt won't have jurisdictional context for this country"
+            )
+
+    def test_cross_border_prompt_has_barrier_classifications(self):
+        """The cross-border prompt must instruct barrier classification."""
+        for term in ["PROHIBITION", "REGULATORY GAP", "CONFLICT", "ASYMMETRY"]:
+            assert term in CROSS_BORDER_PROMPT, f"CROSS_BORDER_PROMPT missing '{term}'"
+
+    def test_cross_border_prompt_has_barrier_summary_table(self):
+        """Must instruct a barrier summary table."""
+        assert "Barrier Summary" in CROSS_BORDER_PROMPT
+
+    def test_build_cross_border_section_includes_countries(self):
+        """Built section must name the actual countries."""
+        results = {
+            "all_records": [
+                {"country": "USA", "record_id": 1, "title": "t", "summary": "s"},
+                {"country": "CAN", "record_id": 2, "title": "t", "summary": "s"},
+            ]
+        }
+        section = _build_cross_border_section(results)
+        assert "USA" in section
+        assert "CAN" in section
+
+    def test_build_cross_border_section_flags_asymmetry(self):
+        """When one country has 4x+ more records, flag asymmetry."""
+        records = [{"country": "USA", "record_id": i} for i in range(20)]
+        records.append({"country": "CAN", "record_id": 100})
+        results = {"all_records": records}
+        section = _build_cross_border_section(results)
+        assert "asymmetry" in section.lower()
+        assert "CAN" in section
+
+    def test_build_cross_border_section_no_asymmetry_when_balanced(self):
+        """Balanced records should not trigger asymmetry warning."""
+        records = [{"country": "USA", "record_id": i} for i in range(5)]
+        records += [{"country": "CAN", "record_id": i + 10} for i in range(4)]
+        results = {"all_records": records}
+        section = _build_cross_border_section(results)
+        assert "roughly balanced" in section.lower()
+
+    def test_build_cross_border_section_includes_country_context(self):
+        """Built section must include jurisdictional context for each country."""
+        results = {
+            "all_records": [
+                {"country": "USA", "record_id": 1},
+                {"country": "MEX", "record_id": 2},
+            ]
+        }
+        section = _build_cross_border_section(results)
+        assert "HIPAA" in section  # US context
+        assert "COFEPRIS" in section  # Mexico context
+        assert "PIPEDA" not in section  # Canada context should NOT be included
+
+
+class TestCrossBorderComparison:
+    """Test that the database has sufficient data for cross-border comparison."""
+
+    def test_us_and_canada_both_have_telehealth(self):
+        us = search_policies(country="USA", category="telehealth")
+        can = search_policies(country="CAN", category="telehealth")
+        assert len(us) >= 3, f"USA telehealth: only {len(us)} records"
+        assert len(can) >= 3, f"CAN telehealth: only {len(can)} records"
+
+    def test_us_and_canada_both_have_licensing(self):
+        us = search_policies(country="USA", category="medical_licensing")
+        can = search_policies(country="CAN", category="medical_licensing")
+        assert len(us) >= 2, f"USA licensing: only {len(us)} records"
+        assert len(can) >= 3, f"CAN licensing: only {len(can)} records"
+
+    def test_us_and_canada_both_have_privacy(self):
+        us = search_policies(country="USA", category="data_privacy")
+        can = search_policies(country="CAN", category="data_privacy")
+        assert len(us) >= 1, f"USA privacy: only {len(us)} records"
+        assert len(can) >= 3, f"CAN privacy: only {len(can)} records"
+
+    def test_validate_plan_injects_for_both_countries_on_cross_border(self):
+        """A US-Canada question must get required categories for BOTH countries."""
+        categories = _get_available_categories()
+        plan = [{"country": "USA", "category": "telehealth"}]
+        valid = _validate_plan(plan, categories, question="US doctor telehealth to Canada")
+        usa_cats = [s["category"] for s in valid if s["country"] == "USA"]
+        can_cats = [s["category"] for s in valid if s["country"] == "CAN"]
+        assert "telehealth" in can_cats, "CAN telehealth not injected"
+        assert "medical_licensing" in can_cats, "CAN medical_licensing not injected"
+        assert "data_privacy" in can_cats, "CAN data_privacy not injected"
+        assert "medical_licensing" in usa_cats, "USA medical_licensing not injected"
+
+    def test_detect_countries_us_mexico(self):
+        available = ["USA", "CAN", "MEX", "GBR"]
+        countries = _detect_countries("What stops a US doctor from telehealth in Mexico?", available)
+        assert "USA" in countries
+        assert "MEX" in countries
+
+    def test_canada_has_medical_liability(self):
+        """Canada must have medical liability records for cross-border comparison."""
+        results = search_policies(country="CAN", category="medical_liability")
+        assert len(results) >= 3, f"CAN medical_liability: only {len(results)} records, need >= 3"
+        # Verify content: at least one record mentions CMPA
+        titles = " ".join(r["title"] for r in results).lower()
+        assert "cmpa" in titles or "liability" in titles, (
+            "medical_liability records should reference CMPA or liability"
+        )
+
+    def test_canada_has_clinical_standards(self):
+        """Canada must have clinical standards records."""
+        results = search_policies(country="CAN", category="clinical_standards")
+        assert len(results) >= 3, f"CAN clinical_standards: only {len(results)} records, need >= 3"
+
+    def test_canada_telehealth_province_coverage(self):
+        """Telehealth records must reference at least 8 provinces."""
+        results = search_policies(country="CAN", category="telehealth")
+        text = " ".join(f"{r['title']} {r['summary']}" for r in results).lower()
+        provinces_found = []
+        province_markers = {
+            "ON": ["ontario", "cpso"],
+            "BC": ["british columbia", "cpsbc"],
+            "AB": ["alberta", "cpsa"],
+            "QC": ["quebec", "québec", "cmq"],
+            "SK": ["saskatchewan", "cpss"],
+            "MB": ["manitoba", "cpsm"],
+            "NS": ["nova scotia", "cpsns"],
+            "NB": ["new brunswick", "cpsnb"],
+            "PE": ["prince edward island", "cpspei", "pei"],
+            "NL": ["newfoundland", "cpsnl"],
+        }
+        for code, markers in province_markers.items():
+            if any(m in text for m in markers):
+                provinces_found.append(code)
+        assert len(provinces_found) >= 8, (
+            f"Only {len(provinces_found)} provinces found in telehealth records: "
+            f"{provinces_found}. Need >= 8 for cross-border coverage."
+        )
+
+    def test_canada_has_digital_health(self):
+        """Canada must have digital health records."""
+        results = search_policies(country="CAN", category="digital_health")
+        assert len(results) >= 3, f"CAN digital_health: only {len(results)} records, need >= 3"
+
+    def test_canada_has_health_workforce(self):
+        """Canada must have health workforce records."""
+        results = search_policies(country="CAN", category="health_workforce")
+        assert len(results) >= 2, f"CAN health_workforce: only {len(results)} records, need >= 2"
+
+    def test_detect_countries_all_three(self):
+        available = ["USA", "CAN", "MEX", "GBR"]
+        countries = _detect_countries(
+            "Compare telehealth rules across the United States, Canada, and Mexico", available
+        )
+        assert "USA" in countries
+        assert "CAN" in countries
+        assert "MEX" in countries

@@ -217,5 +217,87 @@ class TestAgentOutputFormat:
             "Baseline must flag non-English sources"
 
 
+class TestBaseline002USCanada:
+    """Tests for human baseline #002: US doctor telehealth to Canada."""
+
+    def _check_record_ids_cited(self, answer_text: str) -> list:
+        pattern = r'\[Record ID:\s*([\d,\s]+)'
+        matches = re.findall(pattern, answer_text)
+        ids = []
+        for match in matches:
+            nums = re.findall(r'\d+', match)
+            ids.extend([int(n) for n in nums])
+        return ids
+
+    def test_baseline_002_has_record_ids(self):
+        """US-Canada baseline must cite record IDs from both countries."""
+        with open("tests/human_baseline_002.md", "r") as f:
+            answer = f.read()
+        ids = self._check_record_ids_cited(answer)
+        assert len(ids) >= 20, f"Baseline 002 cites {len(ids)} records, expected at least 20"
+
+    def test_baseline_002_cites_both_countries(self):
+        """Baseline must cite records from BOTH USA and Canada."""
+        with open("tests/human_baseline_002.md", "r") as f:
+            answer = f.read()
+        ids = self._check_record_ids_cited(answer)
+        # Verify cited IDs include records from both countries
+        session = get_session()
+        countries = set()
+        for rid in set(ids):
+            record = session.query(HealthPolicy).filter_by(id=rid).first()
+            if record:
+                countries.add(record.country)
+        session.close()
+        assert "USA" in countries, "Baseline 002 must cite US records"
+        assert "CAN" in countries, "Baseline 002 must cite Canadian records"
+
+    def test_baseline_002_labels_inferences(self):
+        """US-Canada baseline must label all inferences."""
+        with open("tests/human_baseline_002.md", "r") as f:
+            answer = f.read()
+        inference_count = answer.lower().count("*inference")
+        assert inference_count >= 5, f"Found {inference_count} labeled inferences, expected at least 5"
+
+    def test_baseline_002_lists_gaps(self):
+        """Must list what the database does NOT have."""
+        with open("tests/human_baseline_002.md", "r") as f:
+            answer = f.read()
+        assert "does not have" in answer.lower() or "gap" in answer.lower()
+
+    def test_baseline_002_has_confidence_level(self):
+        with open("tests/human_baseline_002.md", "r") as f:
+            answer = f.read()
+        assert "confidence:" in answer.lower()
+
+    def test_baseline_002_flags_translations(self):
+        """Must flag French-language Quebec sources."""
+        with open("tests/human_baseline_002.md", "r") as f:
+            answer = f.read()
+        assert "french" in answer.lower() or "machine-translated" in answer.lower(), \
+            "Baseline must flag French-language sources"
+
+    def test_baseline_002_covers_licensing_barrier(self):
+        """Must address the core licensing barrier (provincial fragmentation)."""
+        with open("tests/human_baseline_002.md", "r") as f:
+            answer = f.read()
+        assert "provincial" in answer.lower()
+        assert "college of physicians" in answer.lower() or "cpso" in answer.lower()
+
+    def test_baseline_002_covers_liability_barrier(self):
+        """Must address the CMPA protection gap."""
+        with open("tests/human_baseline_002.md", "r") as f:
+            answer = f.read()
+        assert "cmpa" in answer.lower()
+        assert "liability" in answer.lower() or "medico-legal" in answer.lower()
+
+    def test_baseline_002_covers_privacy_barrier(self):
+        """Must address dual privacy compliance (HIPAA + PIPEDA)."""
+        with open("tests/human_baseline_002.md", "r") as f:
+            answer = f.read()
+        assert "hipaa" in answer.lower()
+        assert "pipeda" in answer.lower()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

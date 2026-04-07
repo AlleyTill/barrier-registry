@@ -662,6 +662,82 @@ def _execute_plan(plan: list[dict], verbose: bool = False, question: str = "") -
 
 # --- STEP 3: SYNTHESIZE ---
 
+COUNTRY_CONTEXT = {
+    "USA": (
+        "US Policy Context: Federal system. CMS/Medicare is federal, but medical licensing "
+        "is state-by-state (50 states + DC + territories). HIPAA is the federal health privacy "
+        "framework. DEA regulates controlled substances (schedules I-V). Interstate Medical "
+        "Licensure Compact (IMLC) covers 42+ states for expedited cross-state licensing. "
+        "Telehealth reimbursement rules are set by CMS for Medicare, but states regulate "
+        "practice standards. FSMB oversees state medical boards."
+    ),
+    "CAN": (
+        "Canada Policy Context: Federal-provincial system under the Canada Health Act. "
+        "Medical licensing is provincial — each province has its own College of Physicians "
+        "and Surgeons (CPSO in Ontario, CPSBC in BC, etc.). Privacy is split: PIPEDA (federal "
+        "private-sector) plus provincial health privacy laws (PHIPA in ON, HIA in AB, etc.). "
+        "Controlled substances regulated under CDSA (federal). Drug coverage is NOT part of "
+        "the Canada Health Act — provincial formularies vary widely. CMPA provides medico-legal "
+        "protection (not insurance) for physicians. No national telehealth license — each "
+        "province requires separate registration."
+    ),
+    "MEX": (
+        "Mexico Policy Context: Federal system with state-level health laws under the Ley "
+        "General de Salud. Medical licensing requires Cédula Profesional from SEP. COFEPRIS "
+        "regulates drugs, devices, and health products. No dedicated telehealth law — "
+        "telemedicine recognized under NOM-257-SSA1-2014. LFPDPPP governs personal data "
+        "privacy. Public health insurance through IMSS (formal workers), ISSSTE (government "
+        "workers), and IMSS-Bienestar (uninsured). Medical liability under civil and "
+        "administrative law (CONAMED handles arbitration)."
+    ),
+    "GBR": (
+        "UK Policy Context: National Health Service (NHS) provides universal coverage funded "
+        "by taxation. General Medical Council (GMC) handles medical licensing nationally. "
+        "Care Quality Commission (CQC) regulates health providers including telehealth. "
+        "Data protection under UK GDPR + Data Protection Act 2018. MHRA regulates medicines "
+        "and medical devices. Post-Brexit, UK-EU healthcare agreements are bilateral."
+    ),
+}
+
+
+CROSS_BORDER_PROMPT = """
+CROSS-BORDER ANALYSIS INSTRUCTIONS (multiple countries detected in records):
+
+Countries in this query: {countries}
+Records per country: {country_counts}
+
+{country_contexts}
+
+You MUST structure your answer as a CROSS-BORDER COMPARISON:
+
+For each policy area relevant to the question (e.g., licensing, telehealth rules, privacy,
+prescribing/controlled substances, liability, insurance/coverage):
+
+1. **[Policy Area]**
+   - **{country_a}:** [State the rule with citation] [Record ID: N]
+   - **{country_b}:** [State the rule with citation] [Record ID: N]
+   - **Barrier:** [What specific conflict, gap, or mismatch exists between these two systems]
+   - **Classification:** [One of: PROHIBITION — explicitly banned in one jurisdiction |
+     REGULATORY GAP — one country has no rule on this topic |
+     CONFLICT — both countries have rules that contradict each other |
+     ASYMMETRY — one country regulates this area, the other doesn't]
+
+If no records exist for one country on a policy area, state: "No records in database for
+[Country] on [topic]" — do NOT infer policy from silence. Absence of a record does NOT mean
+absence of a rule.
+
+After the comparison sections, include:
+
+### Barrier Summary
+| # | Barrier | Classification | Countries |
+|---|---------|---------------|-----------|
+| 1 | [Short description] | PROHIBITION / REGULATORY GAP / CONFLICT / ASYMMETRY | {country_a} vs {country_b} |
+
+### Data Asymmetry Notice
+{asymmetry_notice}
+"""
+
+
 SYNTHESIZE_PROMPT = """You are the Policy Researcher agent for the Global Healthcare Barrier Registry.
 
 You have been given ALL relevant records from the database for a user's question. Your job is to synthesize a comprehensive, cited answer.
@@ -704,6 +780,61 @@ DATABASE RECORDS:
 {records}"""
 
 
+def _is_cross_border(execution_results: dict) -> bool:
+    """Return True if execution results contain records from 2+ countries."""
+    countries = set(r["country"] for r in execution_results.get("all_records", []))
+    return len(countries) >= 2
+
+
+def _get_country_counts(records: list[dict]) -> dict[str, int]:
+    """Count records per country."""
+    counts = {}
+    for r in records:
+        c = r["country"]
+        counts[c] = counts.get(c, 0) + 1
+    return counts
+
+
+def _build_cross_border_section(execution_results: dict) -> str:
+    """Build the cross-border prompt section from execution results."""
+    records = execution_results.get("all_records", [])
+    country_counts = _get_country_counts(records)
+    countries = sorted(country_counts.keys())
+
+    # Build country context block
+    contexts = []
+    for c in countries:
+        if c in COUNTRY_CONTEXT:
+            contexts.append(COUNTRY_CONTEXT[c])
+    country_contexts = "\n\n".join(contexts)
+
+    # Build asymmetry notice
+    max_count = max(country_counts.values())
+    min_count = min(country_counts.values())
+    if max_count > min_count * 3:
+        sparse = [c for c, n in country_counts.items() if n == min_count]
+        dense = [c for c, n in country_counts.items() if n == max_count]
+        asymmetry_notice = (
+            f"WARNING: Significant data asymmetry detected. "
+            f"{', '.join(dense)} has {max_count} records vs {', '.join(sparse)} "
+            f"with {min_count} records. Coverage for {', '.join(sparse)} may be "
+            f"incomplete — barriers may exist that are not captured in this database."
+        )
+    else:
+        asymmetry_notice = "Record counts are roughly balanced across countries."
+
+    counts_str = ", ".join(f"{c}: {n}" for c, n in sorted(country_counts.items()))
+
+    return CROSS_BORDER_PROMPT.format(
+        countries=", ".join(countries),
+        country_counts=counts_str,
+        country_contexts=country_contexts,
+        country_a=countries[0] if len(countries) >= 1 else "Country A",
+        country_b=countries[1] if len(countries) >= 2 else "Country B",
+        asymmetry_notice=asymmetry_notice,
+    )
+
+
 def _synthesize(question: str, execution_results: dict, backend: str = "claude", verbose: bool = False) -> str:
     """Step 3: LLM synthesizes the answer from all retrieved records."""
     # Format searches performed
@@ -723,6 +854,14 @@ def _synthesize(question: str, execution_results: dict, backend: str = "claude",
         confidence=confidence_str,
         records=records_str,
     )
+
+    # Append cross-border instructions when records span multiple countries
+    if _is_cross_border(execution_results):
+        cross_border_section = _build_cross_border_section(execution_results)
+        system += cross_border_section
+        if verbose:
+            countries = sorted(set(r["country"] for r in execution_results["all_records"]))
+            print(f"[SYNTHESIZE] Cross-border mode: {', '.join(countries)}")
 
     messages = [
         {"role": "system", "content": system},
