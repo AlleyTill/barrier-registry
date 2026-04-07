@@ -15,6 +15,12 @@ import httpx
 from dotenv import load_dotenv
 from src.database.models import get_session, HealthPolicy, WHOIndicator
 from src.validation.thresholds import evaluate_answer_confidence
+try:
+    from src.data_ingestion.embeddings import search_semantic
+    HAS_SEMANTIC = True
+except ImportError:
+    HAS_SEMANTIC = False
+    search_semantic = None
 
 load_dotenv(override=True)
 
@@ -109,12 +115,198 @@ def check_confidence(records: list = None) -> dict:
     return {"level": result.level, "count": result.record_count, "caveats": result.caveats, "can_answer": result.can_answer}
 
 
+def search_policies_semantic(query: str, country: str = "", category: str = "", limit: int = 20) -> list[dict]:
+    """Semantic search over policy embeddings. Finds records by meaning, not just keywords.
+    Use when keyword search might miss relevant records (e.g., 'prescribing rules' finds 'controlled substances')."""
+    if not HAS_SEMANTIC:
+        return []
+    return search_semantic(query=query, country=country, category=category, limit=limit)
+
+
 TOOLS = {
     "search_policies": search_policies,
+    "search_policies_semantic": search_policies_semantic,
     "search_who_indicators": search_who_indicators,
     "list_categories": list_categories,
     "check_confidence": check_confidence,
 }
+
+
+# --- SPECIALTY-BASED RELEVANCE FILTERING ---
+
+# When a single category search returns more than this many records,
+# use two-pass specialty filtering instead of dumping everything.
+MAX_RECORDS_PER_CATEGORY = 50
+
+# Medical specialty taxonomy — maps keyword patterns to specialty groups.
+# Used to tag large result sets (like NCDs) and filter by relevance.
+SPECIALTY_MAP = {
+    "cardiovascular": [
+        "heart", "cardiac", "cardio", "pacemaker", "defibrillator", "aortic",
+        "valve", "artery", "arterial", "vascular", "aneurysm", "angina",
+        "atrial", "ventricular", "coronary", "ecg", "ekg", "electrocardiograph",
+        "hypertension", "blood pressure", "thrombosis", "embolism", "stent",
+        "bypass", "ablation", "counterpulsation", "revascularization",
+        "transcatheter", "mitral", "tricuspid", "icd", "tavr", "laac",
+        "his bundle", "carotid body", "endocardial electrical stimulation",
+        "carotid function", "ventriculectomy",
+    ],
+    "oncology": [
+        "cancer", "tumor", "oncolog", "chemotherapy", "carcinoma", "neoplast",
+        "malignant", "metastasis", "metastatic", "biopsy", "radiation",
+        "lymphoma", "melanoma", "sarcoma", "leukemia", "mastectomy",
+        "lumpectomy", "mammogram", "prostate screen", "colorectal screen",
+        "pap smear", "cervical", "car t-cell", "car-t", "chimeric antigen",
+        "photodynamic", "actinic keratosis", "stem cell transplant",
+    ],
+    "respiratory": [
+        "lung", "pulmonary", "respiratory", "bronch", "cpap", "sleep apnea",
+        "oxygen", "ventilat", "tracheostomy", "copd", "pneumo", "airway",
+        "thoracic", "spirometry", "nebuliz",
+    ],
+    "neurology": [
+        "brain", "neural", "neuro", "seizure", "epilepsy", "parkinson",
+        "tremor", "alzheimer", "dementia", "eeg", "deep brain stimulation",
+        "vagus nerve", "multiple sclerosis", "stroke", "cranial",
+        "intracranial", "stereotax", "cerebral", "l-dopa", "levodopa",
+        "cochlear", "speech-language", "dysphagia", "melodic intonation",
+        "electroconvulsive", "bell's palsy", "facial nerve paralysis",
+        "evoked response", "nerve tract",
+    ],
+    "musculoskeletal": [
+        "bone", "joint", "spine", "spinal", "lumbar", "orthoped", "fracture",
+        "arthroscop", "osteo", "disc", "vertebr", "scoliosis", "musculoskel",
+        "tendon", "ligament", "osteogenic", "prosthetic shoe",
+        "meniscus", "manipulation",
+    ],
+    "renal_urological": [
+        "renal", "kidney", "dialysis", "urinar", "bladder", "urol",
+        "nephro", "esrd", "transplant", "incontinence", "prostat",
+        "pelvic floor", "catheter", "capd", "ultrafiltration",
+        "hemoperfusion", "hemofiltration", "uroflowmet",
+    ],
+    "endocrine_metabolic": [
+        "diabet", "insulin", "glucose", "thyroid", "obesity", "bariatric",
+        "nutrition", "metabolic", "hemoglobin a1c", "glycated",
+        "enteral", "parenteral",
+    ],
+    "gastrointestinal": [
+        "gastric", "intestin", "esophag", "colon", "liver", "hepat",
+        "pancrea", "abdomin", "fecal", "cholecyst", "gallbladder",
+        "hernia", "gastrophotograph", "endoscopy",
+    ],
+    "ophthalmology": [
+        "eye", "ocular", "ophthalm", "retina", "cataract", "intraocular",
+        "lens", "corneal", "vitrectomy", "keratoplasty", "visual",
+        "scleral shell", "perimetry", "endothelial cell",
+    ],
+    "hematology": [
+        "blood", "hematolog", "transfusion", "platelet", "coagul",
+        "anemia", "erythropoie", "hemophilia", "immunoglobulin",
+        "iron therapy", "heparin",
+    ],
+    "infectious_disease": [
+        "hiv", "aids", "hepatitis", "infection", "virus", "viral",
+        "immunodeficiency", "prep ", "antibiotic", "sti ", "sexually transmitted",
+    ],
+    "pain_rehabilitation": [
+        "pain", "tens", "nerve stimulat", "rehabilitation", "electric stimul",
+        "biofeedback", "acupuncture", "diathermy",
+    ],
+    "diagnostic_imaging": [
+        "mri", "magnetic resonance", "pet scan", "pet ", "fdg", "ct scan",
+        "computed tomography", "ultrasound", "x-ray", "imaging", "radiolog",
+        "tomography", "spect", "angiography", "thermography",
+        "transillumination", "diaphanography",
+    ],
+    "behavioral_health": [
+        "alcohol", "substance", "drug abuse", "tobacco", "smoking",
+        "depression", "mental health", "psychiatric", "psycholog",
+        "counseling", "behavioral", "narcotic addiction", "withdrawal treatment",
+    ],
+    "wound_skin": [
+        "wound", "skin", "dermal", "ulcer", "decubitus", "burn",
+        "psoriasis", "hyperbaric oxygen",
+    ],
+    "general_preventive": [
+        "screening", "preventive", "wellness", "routine", "immunization",
+        "vaccine", "prophylaxis",
+    ],
+    "laboratory_diagnostics": [
+        "sequencing", "ngs", "lipid testing", "prothrombin time",
+        "gamma glutamyl", "histocompatibility", "plethysmograph",
+        "conduction threshold", "lymphocyte mitogen", "sweat test",
+        "cytotoxic food", "pharmacogenomic", "laboratory test",
+        "diagnostic breath", "food allergy", "hair analysis",
+        "hemorheograph", "obsolete or unreliable", "challenge ingestion",
+        "microvolt t-wave",
+    ],
+    "dme_assistive": [
+        "durable medical equipment", "speech generating", "mobility assistive",
+        "air-fluidized", "seat elevation", "wheelchair", "pneumatic compress",
+        "infusion pump", "hospital bed", "seat lift", "ibot",
+        "white cane", "continence aid", "gravlee",
+    ],
+    "surgical_procedures": [
+        "angioplasty", "abortion", "wrong body part", "wrong patient",
+        "wrong surgical", "laser procedure", "sterilization", "embolization",
+        "gender dysphoria", "gender reassignment", "ultrasonic surgery",
+        "plastic surgery", "moon face", "cavernous nerve", "vabra aspirator",
+    ],
+    "immunology": [
+        "immune globulin", "photopheresis", "apheresis", "cellular immunotherapy",
+        "cellular therapy", "antigen", "sublingual admin",
+        "histamine therapy", "dmso", "dimethyl sulfoxide",
+    ],
+    "therapies_rehab": [
+        "verteporfin", "photosensitive drug", "transcendental meditation",
+        "pritikin", "infrared therapy", "chelation", "thermogenic",
+        "impotence",
+    ],
+    "administrative": [
+        "consultation", "physician's office", "patient education",
+        "pronouncement of death", "home health nurse",
+        "podiatrist", "skilled nursing facility",
+    ],
+}
+
+
+def _tag_specialties(record: dict) -> set[str]:
+    """Tag a record with matching medical specialties based on title and summary."""
+    text = f"{record.get('title', '')} {record.get('summary', '')}".lower()
+    tags = set()
+    for specialty, keywords in SPECIALTY_MAP.items():
+        if any(kw in text for kw in keywords):
+            tags.add(specialty)
+    return tags
+
+
+def _detect_question_specialties(question: str) -> set[str]:
+    """Detect which medical specialties a question is about."""
+    q = question.lower()
+    matches = set()
+    for specialty, keywords in SPECIALTY_MAP.items():
+        if any(kw in q for kw in keywords):
+            matches.add(specialty)
+    return matches
+
+
+def _filter_by_specialty(records: list[dict], question: str) -> list[dict]:
+    """Two-pass specialty filter for large result sets.
+    Pass 1: Detect which specialties the question is about.
+    Pass 2: Return only records matching those specialties.
+    Fallback: if no specialty matches, return records with direct keyword overlap."""
+    question_specialties = _detect_question_specialties(question)
+
+    if question_specialties:
+        # Pass 2: keep records whose specialties overlap with the question's
+        filtered = [r for r in records if _tag_specialties(r) & question_specialties]
+        if filtered:
+            return filtered
+
+    # No specialty matched — return empty. Every record should be tagged to at least
+    # one specialty. If zero match, the question isn't about any NCD-relevant topic.
+    return []
 
 
 # --- LLM BACKENDS ---
@@ -383,8 +575,9 @@ def _validate_plan(plan: list[dict], categories: dict[str, list[str]],
 
 # --- STEP 2: EXECUTE ---
 
-def _execute_plan(plan: list[dict], verbose: bool = False) -> dict:
-    """Step 2: Run every search in the plan. No LLM involved."""
+def _execute_plan(plan: list[dict], verbose: bool = False, question: str = "") -> dict:
+    """Step 2: Run every search in the plan. No LLM involved.
+    Large result sets are filtered by relevance to the question."""
     all_results = {}
     all_records = []
 
@@ -398,14 +591,52 @@ def _execute_plan(plan: list[dict], verbose: bool = False) -> dict:
             print(f"[EXECUTE] Search {i+1}/{len(plan)}: {country}/{category}{kw}")
 
         results = search_policies(country=country, category=category, keyword=keyword)
+
+        # Filter large result sets by medical specialty to avoid context flooding
+        if len(results) > MAX_RECORDS_PER_CATEGORY and question:
+            filtered = _filter_by_specialty(results, question)
+            if verbose:
+                specialties = _detect_question_specialties(question)
+                print(f"  -> {len(results)} records found, filtered to {len(filtered)} by specialty {sorted(specialties) if specialties else '(keyword fallback)'}")
+            results = filtered
+        elif verbose:
+            print(f"  -> {len(results)} records found")
+
         key = f"{country}/{category}"
         if keyword:
             key += f" (keyword: {keyword})"
         all_results[key] = results
         all_records.extend(results)
 
+    # Semantic search: supplement keyword results with embedding-based matches
+    # Run one semantic search per country to catch what keywords missed
+    keyword_ids = {r["record_id"] for r in all_records}
+    countries_searched = sorted(set(s["country"] for s in plan))
+
+    for country in countries_searched:
         if verbose:
-            print(f"  -> {len(results)} records found")
+            print(f"[EXECUTE] Semantic search: {country} (question-based)")
+        try:
+            sem_results = search_policies_semantic(
+                query=question or "healthcare policy",
+                country=country,
+                limit=15,
+            )
+            # Only keep results NOT already found by keyword search
+            new_results = [r for r in sem_results if r["record_id"] not in keyword_ids]
+            if new_results:
+                key = f"{country}/semantic"
+                all_results[key] = new_results
+                all_records.extend(new_results)
+                for r in new_results:
+                    keyword_ids.add(r["record_id"])
+                if verbose:
+                    print(f"  -> {len(new_results)} NEW records found (not in keyword results)")
+            elif verbose:
+                print(f"  -> 0 new records (all already found by keyword search)")
+        except Exception as e:
+            if verbose:
+                print(f"  -> Semantic search failed: {e} (continuing with keyword results only)")
 
     # Deduplicate records by record_id
     seen_ids = set()
@@ -416,7 +647,7 @@ def _execute_plan(plan: list[dict], verbose: bool = False) -> dict:
             unique_records.append(r)
 
     if verbose:
-        print(f"\n[EXECUTE] Total: {len(unique_records)} unique records from {len(plan)} searches\n")
+        print(f"\n[EXECUTE] Total: {len(unique_records)} unique records from {len(plan)} keyword + {len(countries_searched)} semantic searches\n")
 
     # Run confidence check
     confidence = check_confidence(unique_records)
@@ -549,7 +780,7 @@ def run_agent(question: str, verbose: bool = False, backend: str = "claude") -> 
     # Step 2: Execute
     if verbose:
         print("--- STEP 2: EXECUTING SEARCHES ---")
-    results = _execute_plan(plan, verbose=verbose)
+    results = _execute_plan(plan, verbose=verbose, question=question)
 
     # Step 3: Synthesize
     if verbose:

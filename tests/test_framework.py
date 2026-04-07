@@ -5,10 +5,12 @@ Tests the framework structure and tools — does NOT require Ollama running.
 
 import pytest
 from src.agents.framework import (
-    search_policies, search_who_indicators, check_confidence, list_categories,
+    search_policies, search_policies_semantic, search_who_indicators,
+    check_confidence, list_categories,
     _parse_tool_call, TOOLS, SYNTHESIZE_PROMPT, PLAN_PROMPT,
     _get_available_categories, _validate_plan, _detect_countries,
-    REQUIRED_CATEGORIES,
+    REQUIRED_CATEGORIES, _filter_by_specialty, _detect_question_specialties,
+    _tag_specialties, MAX_RECORDS_PER_CATEGORY, SPECIALTY_MAP,
 )
 
 
@@ -206,3 +208,173 @@ class TestFrameworkConfig:
         available = ["USA", "CAN", "MEX", "GBR"]
         countries = _detect_countries("barriers for telehealth in Mexico", available)
         assert "MEX" in countries
+
+
+class TestSpecialtyFiltering:
+    """Test the two-pass specialty filtering for large result sets (NCD flooding fix)."""
+
+    def test_specialty_map_covers_all_areas(self):
+        """Map must cover enough specialties that every NCD can be tagged."""
+        expected = [
+            "cardiovascular", "oncology", "respiratory", "neurology",
+            "musculoskeletal", "renal_urological", "endocrine_metabolic",
+            "gastrointestinal", "ophthalmology", "hematology",
+            "infectious_disease", "pain_rehabilitation", "diagnostic_imaging",
+            "behavioral_health", "wound_skin", "general_preventive",
+            "laboratory_diagnostics", "dme_assistive", "surgical_procedures",
+            "immunology", "therapies_rehab", "administrative",
+        ]
+        for s in expected:
+            assert s in SPECIALTY_MAP, f"Missing specialty: {s}"
+
+    def test_every_ncd_is_tagged(self):
+        """CRITICAL: Every single NCD must map to at least one specialty.
+        Untagged NCDs cause garbage results via fallback."""
+        ncds = search_policies(country="USA", category="national_coverage_determination")
+        untagged = [r for r in ncds if not _tag_specialties(r)]
+        assert len(untagged) == 0, (
+            f"{len(untagged)} NCDs have no specialty tag: "
+            + ", ".join(f"ID:{r['record_id']} {r['title'][:40]}" for r in untagged[:5])
+        )
+
+    def test_tag_specialties_cardiac(self):
+        record = {"title": "Cardiac Contractility Modulation (CCM) for Heart Failure", "summary": ""}
+        tags = _tag_specialties(record)
+        assert "cardiovascular" in tags
+
+    def test_tag_specialties_cancer(self):
+        record = {"title": "Anti-Cancer Chemotherapy for Colorectal Cancer", "summary": ""}
+        tags = _tag_specialties(record)
+        assert "oncology" in tags
+
+    def test_tag_specialties_diabetes(self):
+        record = {"title": "Blood Glucose Testing", "summary": "diabetes management"}
+        tags = _tag_specialties(record)
+        assert "endocrine_metabolic" in tags
+
+    def test_detect_question_specialties_heart(self):
+        specs = _detect_question_specialties("What does Medicare cover for heart failure treatment?")
+        assert "cardiovascular" in specs
+
+    def test_detect_question_specialties_none_for_telehealth(self):
+        specs = _detect_question_specialties("What are the telehealth licensing rules between US and Canada?")
+        # Telehealth policy questions don't map to a medical specialty
+        assert len(specs) == 0
+
+    def test_filter_telehealth_returns_zero_ncds(self):
+        """Telehealth policy question has NO medical specialty — must return 0 NCDs, not garbage."""
+        ncds = search_policies(country="USA", category="national_coverage_determination")
+        if len(ncds) <= MAX_RECORDS_PER_CATEGORY:
+            pytest.skip("Not enough NCDs to trigger filtering")
+        filtered = _filter_by_specialty(ncds, "What are the telehealth rules between US and Canada?")
+        assert len(filtered) == 0, (
+            f"Telehealth question returned {len(filtered)} NCDs — should be 0. "
+            f"First result: {filtered[0]['title'] if filtered else 'N/A'}"
+        )
+
+    def test_filter_heart_failure_returns_only_cardiovascular(self):
+        """Heart failure question must return cardiovascular NCDs — verify content, not just count."""
+        ncds = search_policies(country="USA", category="national_coverage_determination")
+        if len(ncds) <= MAX_RECORDS_PER_CATEGORY:
+            pytest.skip("Not enough NCDs to trigger filtering")
+        filtered = _filter_by_specialty(ncds, "What does Medicare cover for heart failure treatment?")
+        assert len(filtered) > 0
+        assert len(filtered) < len(ncds)
+        # Every returned record must actually be tagged cardiovascular
+        for r in filtered:
+            tags = _tag_specialties(r)
+            assert "cardiovascular" in tags, (
+                f"Record ID:{r['record_id']} '{r['title']}' returned for heart failure "
+                f"but tagged as {tags}, not cardiovascular"
+            )
+
+    def test_filter_diabetes_returns_only_endocrine(self):
+        """Diabetes question must return endocrine/metabolic NCDs — verify each record."""
+        ncds = search_policies(country="USA", category="national_coverage_determination")
+        if len(ncds) <= MAX_RECORDS_PER_CATEGORY:
+            pytest.skip("Not enough NCDs to trigger filtering")
+        filtered = _filter_by_specialty(ncds, "What are Medicare coverage rules for diabetes management and insulin pumps?")
+        assert len(filtered) > 0
+        assert len(filtered) < 50
+        # Verify specific expected records are present
+        titles = [r["title"].lower() for r in filtered]
+        assert any("glucose" in t for t in titles), "Missing blood glucose testing NCD"
+        assert any("insulin" in t for t in titles), "Missing insulin-related NCD"
+        # Every returned record must be tagged endocrine_metabolic
+        for r in filtered:
+            tags = _tag_specialties(r)
+            assert "endocrine_metabolic" in tags, (
+                f"Record ID:{r['record_id']} '{r['title']}' returned for diabetes "
+                f"but tagged as {tags}, not endocrine_metabolic"
+            )
+
+
+class TestSemanticSearch:
+    """Test the RAG/semantic search pipeline (requires Ollama + Qdrant populated)."""
+
+    def test_semantic_search_tool_registered(self):
+        assert "search_policies_semantic" in TOOLS
+
+    def test_semantic_search_returns_records_with_scores(self):
+        """Semantic search must return real records with valid similarity scores."""
+        results = search_policies_semantic("telehealth licensing", country="USA", limit=5)
+        assert isinstance(results, list)
+        assert len(results) > 0
+        for r in results:
+            assert "record_id" in r
+            assert "country" in r
+            assert "title" in r
+            assert "similarity_score" in r
+            assert 0 <= r["similarity_score"] <= 1, f"Score {r['similarity_score']} out of range"
+            assert r["country"] == "USA"
+
+    def test_semantic_privacy_returns_privacy_records(self):
+        """Privacy query must return actual data_privacy records — verify by category and title."""
+        results = search_policies_semantic("patient health information privacy protection", country="CAN", limit=5)
+        assert len(results) > 0
+        # Top result should be a privacy record
+        assert results[0]["category"] == "data_privacy", (
+            f"Top result for privacy query is '{results[0]['title']}' "
+            f"in category '{results[0]['category']}', expected data_privacy"
+        )
+        # At least 3 of top 5 should be data_privacy
+        privacy_count = sum(1 for r in results if r["category"] == "data_privacy")
+        assert privacy_count >= 3, f"Only {privacy_count}/5 results are data_privacy records"
+
+    def test_semantic_finds_controlled_substances_without_exact_keyword(self):
+        """CORE RAG VALUE: 'narcotics' keyword returns 0, but semantic finds controlled substance records.
+        Verify the actual records found are about controlled substances, not random noise."""
+        keyword_results = search_policies(country="CAN", category="cross_border", keyword="narcotics")
+        assert len(keyword_results) == 0, "Keyword 'narcotics' should find nothing — that's the point"
+
+        semantic_results = search_policies_semantic(
+            "importing narcotics and controlled drugs across Canadian border", country="CAN", limit=10
+        )
+        assert len(semantic_results) > 0
+
+        # Verify the results are actually about controlled substances / drug importation
+        relevant_terms = ["controlled", "substance", "drug", "import", "export", "medication", "prescri"]
+        relevant_count = 0
+        for r in semantic_results:
+            text = f"{r['title']} {r['summary']}".lower()
+            if any(term in text for term in relevant_terms):
+                relevant_count += 1
+
+        assert relevant_count >= 3, (
+            f"Only {relevant_count}/{len(semantic_results)} semantic results are actually about "
+            f"controlled substances. Results: {[r['title'][:50] for r in semantic_results]}"
+        )
+
+    def test_semantic_respects_country_filter(self):
+        results = search_policies_semantic("telehealth regulations", country="CAN", limit=10)
+        for r in results:
+            assert r["country"] == "CAN", f"Record '{r['title']}' has country={r['country']}, expected CAN"
+
+    def test_semantic_cross_country_without_filter(self):
+        """Without country filter, should return results from multiple countries."""
+        results = search_policies_semantic("telehealth licensing barriers", limit=20)
+        countries = set(r["country"] for r in results)
+        assert len(countries) > 1, (
+            f"Cross-country semantic search only returned {countries}. "
+            f"Expected multiple countries."
+        )

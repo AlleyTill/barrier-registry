@@ -1,25 +1,26 @@
 # Implementation Tasks
 
 ## Phase 0: Foundation Before Code
-- [ ] TASK-000: Set up pre-commit hooks (tests must pass before any commit)
-- [ ] TASK-001: Manually answer a cross-border policy question from the database — this is the gold standard the agent must match
-- [ ] TASK-002: Define "insufficient data" thresholds (no records = "I don't know", records older than 2 years = staleness warning)
-- [ ] TASK-003: Write tests FIRST (TDD) — agent cites record IDs? says "I don't know" when it should? returns only DB data?
+- [x] TASK-000: Set up pre-commit hooks (tests must pass before any commit)
+- [x] TASK-001: Manually answer a cross-border policy question from the database — this is the gold standard the agent must match
+- [x] TASK-002: Define "insufficient data" thresholds (no records = "I don't know", records older than 2 years = staleness warning)
+- [x] TASK-003: Write tests FIRST (TDD) — agent cites record IDs? says "I don't know" when it should? returns only DB data?
 
 ## Phase 1: One Working Agent
 - [x] TASK-004: Design character sheet for Agent #1 — US Policy Researcher (Role, Goals, Tools, Constraints, NEVER/ALWAYS, dialogue examples, version number)
-- [x] TASK-005: Build 140-line agent framework using Ollama (llama3). Must include max_iterations parameter.
-- [x] TASK-006: Wire SQLite database as an agent tool (search policies, search WHO data) — completed as part of TASK-005
-- [ ] TASK-007: Run Agent #1 manually — ask real questions, grade output against human baseline using 5 criteria: Grounding, Coverage, Faithfulness, Staleness Awareness, Refusal Quality
-- [ ] TASK-008: Run same questions through Claude and compare outputs (desirability comparison — for future reference, not deployment)
-- [ ] TASK-009: Fix failures, iterate until agent matches human baseline quality with citations
+- [x] TASK-005: Framework rewritten from ReAct → plan-then-execute (3-step pipeline: Plan → Execute → Synthesize). Supports 3 modes: --claude (fastest), --hybrid (default, Qwen3 plans + Opus synthesizes), --local (free but slow)
+- [x] TASK-006: SQLite tools wired — search_policies, search_who_indicators, list_categories, check_confidence
+- [x] TASK-007: Agent tested manually — 3-mode comparison (cloud/hybrid/local), 8 failures documented in tests/framework_failure_log.md
+- [x] TASK-008: Claude backend produces quality output; hybrid mode (Qwen3 8B plans, Opus 4.6 synthesizes) is the default
+- [x] TASK-008b: NCD flooding fix — 329 CMS NCDs now filtered by medical specialty taxonomy (two-pass: detect question specialties → return only matching NCDs). 55 tests passing.
+- [ ] TASK-009: Write formal US-Canada human baseline, grade agent output against it
 
 ## Phase 2: RAG + Embeddings
-- [ ] TASK-010: Set up nomic-embed-text embeddings pipeline via Ollama
-- [ ] TASK-011: Wire Qdrant as vector store for policy documents
-- [ ] TASK-012: Chunk and embed existing policy data
-- [ ] TASK-013: Add RAG tool to agent (semantic search instead of keyword only)
-- [ ] TASK-014: Test RAG quality — does it retrieve relevant policies?
+- [x] TASK-010: Embedding pipeline built — Ollama nomic-embed-text (768 dims), batch embedding via src/data_ingestion/embeddings.py
+- [x] TASK-011: Qdrant wired in local file mode (no server needed), stored at data/qdrant_store
+- [x] TASK-012: All 496 records embedded and persisted. No chunking needed (avg 174 char summaries).
+- [x] TASK-013: search_policies_semantic() added to agent framework. Execute step now runs keyword searches + one semantic search per country to catch what keywords miss.
+- [x] TASK-014: 62 tests passing. Key test: semantic finds records keyword misses (e.g., "narcotics" → controlled substances). Telehealth cross-border, privacy, drug regulation all tested.
 
 ## Phase 3: Second Agent + Cross-Border
 - [ ] TASK-015: Create character sheet for Agent #2 — Canada Policy Researcher
