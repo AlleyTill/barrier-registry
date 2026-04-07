@@ -751,8 +751,14 @@ RULES:
 - If 0 records are relevant: say "I don't know" + why.
 - If 1-2 records: answer with caveat "coverage may be incomplete."
 - NEVER give legal advice. Say "consult a licensed attorney."
-- Cite supporting context records too — trade agreements, workforce data, competency frameworks,
-  and other records that strengthen a finding even if they are not the primary regulatory source.
+- ALWAYS cite the foundational/primary legislation for each country (e.g., Canada Health Act,
+  Ley General de Salud, HIPAA) — not just specific provisions or subsections. If a record
+  contains a country's core healthcare law, cite it even if you also cite more specific records.
+- Cite supporting context records: trade agreements (USMCA/T-MEC), bilateral cooperation,
+  workforce data, competency frameworks, patient rights, medical tourism regulations, and
+  national program overviews. These strengthen findings even if not the primary regulatory source.
+- When counting non-English records or stale records in your confidence section, count ONLY
+  records you actually cited — do not estimate. Use the language metadata provided in each record.
 - List data gaps at the end: what the records do NOT cover on this topic.
   IMPORTANT: A gap is something the DATABASE DOES NOT HAVE. Do NOT list something as a gap if a record below covers it.
 - State confidence: HIGH / MODERATE / LOW with reasoning.
@@ -857,12 +863,25 @@ def _synthesize(question: str, execution_results: dict, backend: str = "claude",
         records=records_str,
     )
 
+    # Pre-compute record stats so the LLM doesn't have to count
+    all_records = execution_results.get("all_records", [])
+    non_english = [r for r in all_records if r.get("original_language", "en") != "en"]
+    if non_english:
+        lang_counts = {}
+        for r in non_english:
+            lang = r.get("original_language", "unknown")
+            lang_counts[lang] = lang_counts.get(lang, 0) + 1
+        lang_summary = ", ".join(f"{n} in {l}" for l, n in sorted(lang_counts.items()))
+        system += f"\n\nRECORD LANGUAGE STATS (pre-computed — use these exact numbers):\n"
+        system += f"Non-English records in this result set: {len(non_english)} ({lang_summary}).\n"
+        system += f"Non-English Record IDs: {[r['record_id'] for r in non_english]}\n"
+
     # Append cross-border instructions when records span multiple countries
     if _is_cross_border(execution_results):
         cross_border_section = _build_cross_border_section(execution_results)
         system += cross_border_section
         if verbose:
-            countries = sorted(set(r["country"] for r in execution_results["all_records"]))
+            countries = sorted(set(r["country"] for r in all_records))
             print(f"[SYNTHESIZE] Cross-border mode: {', '.join(countries)}")
 
     messages = [

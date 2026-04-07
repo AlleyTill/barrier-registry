@@ -469,6 +469,15 @@ class TestCrossBorderDetection:
         assert "asymmetry" in section.lower()
         assert "CAN" in section
 
+    def test_synthesize_prompt_requires_foundational_legislation(self):
+        """Prompt must instruct citing foundational/primary legislation."""
+        assert "foundational" in SYNTHESIZE_PROMPT.lower()
+        assert "primary legislation" in SYNTHESIZE_PROMPT.lower()
+
+    def test_synthesize_prompt_requires_exact_language_counts(self):
+        """Prompt must tell LLM to count only cited records, not estimate."""
+        assert "do not estimate" in SYNTHESIZE_PROMPT.lower() or "exact numbers" in SYNTHESIZE_PROMPT.lower()
+
     def test_build_cross_border_section_no_asymmetry_when_balanced(self):
         """Balanced records should not trigger asymmetry warning."""
         records = [{"country": "USA", "record_id": i} for i in range(5)]
