@@ -751,6 +751,8 @@ RULES:
 - If 0 records are relevant: say "I don't know" + why.
 - If 1-2 records: answer with caveat "coverage may be incomplete."
 - NEVER give legal advice. Say "consult a licensed attorney."
+- Cite supporting context records too — trade agreements, workforce data, competency frameworks,
+  and other records that strengthen a finding even if they are not the primary regulatory source.
 - List data gaps at the end: what the records do NOT cover on this topic.
   IMPORTANT: A gap is something the DATABASE DOES NOT HAVE. Do NOT list something as a gap if a record below covers it.
 - State confidence: HIGH / MODERATE / LOW with reasoning.
