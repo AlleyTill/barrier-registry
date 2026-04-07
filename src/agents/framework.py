@@ -747,7 +747,8 @@ RULES:
 - Cite every fact with [Record ID: N]. No citation = don't say it.
 - Label inferences: "Inference (not directly stated in any record): ..."
 - Flag non-English records: "[language: X — verify with original source]"
-- Flag records 2+ years old with a staleness warning.
+- Flag records 2+ years old with a staleness warning. ONLY list Record IDs in staleness
+  or language warnings if you actually cited them in your answer — never reference uncited records.
 - If 0 records are relevant: say "I don't know" + why.
 - If 1-2 records: answer with caveat "coverage may be incomplete."
 - NEVER give legal advice. Say "consult a licensed attorney."
@@ -872,9 +873,10 @@ def _synthesize(question: str, execution_results: dict, backend: str = "claude",
             lang = r.get("original_language", "unknown")
             lang_counts[lang] = lang_counts.get(lang, 0) + 1
         lang_summary = ", ".join(f"{n} in {l}" for l, n in sorted(lang_counts.items()))
-        system += f"\n\nRECORD LANGUAGE STATS (pre-computed — use these exact numbers):\n"
-        system += f"Non-English records in this result set: {len(non_english)} ({lang_summary}).\n"
+        system += f"\n\nRECORD LANGUAGE STATS (pre-computed from full result set):\n"
+        system += f"Non-English records available: {len(non_english)} ({lang_summary}).\n"
         system += f"Non-English Record IDs: {[r['record_id'] for r in non_english]}\n"
+        system += f"IMPORTANT: In your confidence section, only count non-English records from this list that you ACTUALLY CITED in your answer.\n"
 
     # Append cross-border instructions when records span multiple countries
     if _is_cross_border(execution_results):
