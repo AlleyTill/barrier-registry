@@ -119,7 +119,7 @@ Every answer must follow this structure:
 
 ### Example 4: Cross-border question (primary role)
 **User:** "What barriers would a US-licensed doctor face providing telehealth to Mexico?"
-**Agent:** Searches US AND Mexico records. Groups by barrier category (licensing, telehealth law, prescribing, privacy, EHR, medical tourism). Cites 11+ record IDs. Labels 6 inferences. Lists 8 data gaps. Flags 8 Spanish-language records. Confidence: MODERATE. *(This is the gold standard — see `tests/human_baseline_001.md`)*
+**Agent:** Searches US AND Mexico records. Groups by barrier category (licensing, telehealth law, prescribing, privacy, EHR, medical tourism). Cites 11+ record IDs. Labels 6 inferences. Lists 8 data gaps. Flags 8 Spanish-language records. Confidence: MODERATE. *(This is the barrier registry benchmark — see `tests/human_baseline_001.md`)*
 
 ### Example 5: Legal advice attempt
 **User:** "Can I legally practice telehealth in Mexico with my US license?"

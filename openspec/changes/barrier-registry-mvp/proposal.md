@@ -21,14 +21,14 @@ The founder built a healthcare program in Morelia, Mexico (one city's survey: 21
 |---------|-------|--------|------------|--------|------------|----------|
 | US policy database + single agent query | High (any US healthcare worker) | High (no alternative exists) | High (data collected, sources verified) | Medium (Phase 0-1) | **Top** | Must Have |
 | Cross-border comparison (US-CAN-MEX) | High (North American corridor) | High (founder's core use case) | Medium (agent reasoning untested on Ollama) | High (Phase 3) | **High** | Must Have |
-| Gold standard benchmarks | Medium (researchers, policy makers) | Medium (useful but not urgent for users) | Low (benchmark selection is subjective/political) | Medium (Phase 4) | **Medium** | Should Have |
+| Barrier Registry benchmarks | Medium (researchers, policy makers) | Medium (useful but not urgent for users) | Low (benchmark selection is subjective/political) | Medium (Phase 4) | **Medium** | Should Have |
 | Daily scanner for policy updates | Low (background process, invisible to users) | Medium (keeps data fresh) | Medium (government APIs may change) | Medium (Phase 2 adjacent) | **Low** | Could Have |
 | Frontend web interface | High (accessibility) | Medium (CLI works for demo) | High (Streamlit is proven) | Low (Phase 5) | **Medium** | Should Have |
 | Signup/membership system | High (AWE audience) | Low (doesn't affect core product) | High (Mailchimp/Buttondown is simple) | Low (Phase 5) | **Low** | Could Have |
 
 ### MoSCoW Summary
 - **Must Have:** One working agent that answers US policy questions with citations. Cross-border comparison for 3 countries.
-- **Should Have:** Gold standard benchmarks. Web frontend.
+- **Should Have:** Barrier Registry benchmarks. Web frontend.
 - **Could Have:** Daily scanner. Signup system. PDF export.
 - **Won't Have (this version):** More than 3 countries. VR interface. Payment processing. Mobile app.
 
@@ -36,7 +36,7 @@ The founder built a healthcare program in Morelia, Mexico (one city's survey: 21
 An open registry of barriers to cross-border healthcare, powered by AI agents that:
 1. Store and verify healthcare policy data, starting with key regulations per country (honest about coverage — not comprehensive yet)
 2. Compare policies across borders to identify conflicts and gaps
-3. Measure each country against gold standard benchmarks (best-performing country per category)
+3. Measure each country against barrier registry benchmarks (best-performing country per category)
 4. Say "I don't know" when data is insufficient — never guess
 5. Cite specific database record IDs for every claim
 

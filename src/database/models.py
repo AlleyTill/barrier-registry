@@ -45,6 +45,28 @@ class WHOIndicator(Base):
     fetched_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class Belief(Base):
+    """SALT-inspired belief statement — a synthesized inference from multiple policy records.
+    Persists cross-border analysis so the system accumulates knowledge over time."""
+    __tablename__ = "beliefs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    statement_text = Column(Text, nullable=False)
+    confidence_score = Column(Float, nullable=False)  # 0.0-1.0
+    belief_type = Column(String(20), nullable=False)  # barrier, opportunity, risk, trend
+    classification = Column(String(20))  # PROHIBITION, REGULATORY_GAP, CONFLICT, ASYMMETRY
+    country = Column(String(3), nullable=False, index=True)  # primary country
+    country_secondary = Column(String(3), index=True)  # second country (bilateral pairs only)
+    category = Column(String(100), index=True)
+    agent_id = Column(String(50), default="policy_researcher")
+    source_record_ids = Column(Text, nullable=False)  # JSON list: [12, 45, 78]
+    query_text = Column(Text)
+    status = Column(String(20), default="active", index=True)  # active, stale, superseded
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_validated = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    superseded_by = Column(Integer)  # FK to beliefs.id
+
+
 class PolicyUpdate(Base):
     __tablename__ = "policy_updates"
 

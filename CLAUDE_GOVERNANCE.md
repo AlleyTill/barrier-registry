@@ -1,5 +1,5 @@
 # Claude Code Self-Governance Layer
-## For the Global Healthcare Barrier Registry Project
+## For the Barrier Registry Project
 
 This document governs how Claude Code operates on this project.
 Both the user and Claude should hold each other accountable to these rules.
@@ -14,6 +14,7 @@ Both the user and Claude should hold each other accountable to these rules.
 - NEVER present AI-generated policy data without source URLs
 - NEVER skip levels in the maturity model (manual → assisted → automated → orchestrated)
 - NEVER fabricate citations, policy data, or statistics
+- NEVER present a belief without its source_record_ids (beliefs must trace to cited records)
 - NEVER assume a previously stored fact is still true without checking
 - NEVER cheerlead instead of stress-testing
 - NEVER let an agent progress to its next task without a verification step (added from user feedback)

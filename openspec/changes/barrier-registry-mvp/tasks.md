@@ -2,7 +2,7 @@
 
 ## Phase 0: Foundation Before Code
 - [x] TASK-000: Set up pre-commit hooks (tests must pass before any commit)
-- [x] TASK-001: Manually answer a cross-border policy question from the database — this is the gold standard the agent must match
+- [x] TASK-001: Manually answer a cross-border policy question from the database — this is the barrier registry benchmark the agent must match
 - [x] TASK-002: Define "insufficient data" thresholds (no records = "I don't know", records older than 2 years = staleness warning)
 - [x] TASK-003: Write tests FIRST (TDD) — agent cites record IDs? says "I don't know" when it should? returns only DB data?
 
@@ -29,10 +29,10 @@
 - [ ] TASK-018: Create Director/Orchestrator agent
 - [ ] TASK-019: Test cross-border query: "What stops a US doctor from telehealth in Mexico?"
 
-## Phase 4: Gold Standard Benchmarks
+## Phase 4: Barrier Registry Benchmarks
 - [ ] TASK-020: Load Commonwealth Fund benchmark data into DB
 - [ ] TASK-021: Build benchmark comparison tool
-- [ ] TASK-022: Agent can answer "How far is Mexico from gold standard on X?"
+- [ ] TASK-022: Agent can answer "How far is Mexico from barrier registry benchmark on X?"
 - [ ] TASK-023: Test benchmark accuracy against source data
 
 ## Phase 5: Frontend + Deployment

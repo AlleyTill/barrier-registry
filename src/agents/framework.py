@@ -663,11 +663,26 @@ def _execute_plan(plan: list[dict], verbose: bool = False, question: str = "") -
     # Run confidence check
     confidence = check_confidence(unique_records)
 
+    # Fetch prior beliefs for the queried countries (SALT belief augmentation)
+    prior_beliefs = []
+    try:
+        from src.beliefs.manager import get_active_beliefs
+        country_secondary = countries_searched[1] if len(countries_searched) > 1 else None
+        prior_beliefs = get_active_beliefs(
+            country=countries_searched[0] if countries_searched else None,
+            country_secondary=country_secondary,
+        )
+        if verbose and prior_beliefs:
+            print(f"[EXECUTE] Found {len(prior_beliefs)} prior beliefs for context")
+    except Exception:
+        pass  # beliefs are a bonus, never block the pipeline
+
     return {
         "results_by_search": all_results,
         "all_records": unique_records,
         "confidence": confidence,
         "search_count": len(plan),
+        "prior_beliefs": prior_beliefs,
     }
 
 
@@ -748,7 +763,7 @@ After the comparison sections, include:
 """
 
 
-SYNTHESIZE_PROMPT = """You are the Policy Researcher agent for the Global Healthcare Barrier Registry.
+SYNTHESIZE_PROMPT = """You are the Policy Researcher agent for the Barrier Registry.
 
 You have been given ALL relevant records from the database for a user's question. Your job is to synthesize a comprehensive, cited answer.
 
@@ -901,6 +916,27 @@ def _synthesize(question: str, execution_results: dict, backend: str = "claude",
             countries = sorted(set(r["country"] for r in all_records))
             print(f"[SYNTHESIZE] Cross-border mode: {', '.join(countries)}")
 
+    # Inject prior beliefs from previous queries (SALT lateral information flow)
+    prior_beliefs = execution_results.get("prior_beliefs", [])
+    if prior_beliefs:
+        beliefs_text = "\n".join(
+            f"  - [{b['classification'] or b['belief_type']}] {b['statement_text']} "
+            f"(confidence: {b['confidence_score']:.2f}, sources: {b['source_record_ids']})"
+            for b in prior_beliefs
+        )
+        system += f"""
+
+PRIOR BELIEFS (from previous queries — treat as hypotheses, NOT facts):
+{beliefs_text}
+
+You may CONFIRM, UPDATE, or CONTRADICT these based on the current records.
+Do NOT repeat beliefs uncritically — evaluate them against the records above.
+If a prior belief is supported by current records, cite the supporting records.
+If a prior belief is contradicted, explain why with citations.
+"""
+        if verbose:
+            print(f"[SYNTHESIZE] Injecting {len(prior_beliefs)} prior beliefs")
+
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": question},
@@ -1007,6 +1043,21 @@ def run_agent_detailed(question: str, verbose: bool = False, backend: str = "cla
 
     countries = sorted(set(r["country"] for r in results.get("all_records", [])))
 
+    # Step 4: Extract and store beliefs (SALT-inspired persistent inference)
+    new_beliefs = []
+    try:
+        from src.beliefs.extractor import extract_beliefs
+        from src.beliefs.manager import store_beliefs
+        new_beliefs_raw = extract_beliefs(answer, question, countries, results)
+        if new_beliefs_raw:
+            store_beliefs(new_beliefs_raw)
+            new_beliefs = new_beliefs_raw
+            if verbose:
+                print(f"  → {len(new_beliefs)} beliefs extracted and stored")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Belief extraction skipped: {e}")
+
     return {
         "question": question,
         "backend": backend,
@@ -1018,6 +1069,7 @@ def run_agent_detailed(question: str, verbose: bool = False, backend: str = "cla
         "record_count": record_count,
         "search_count": results.get("search_count", 0),
         "is_cross_border": len(countries) >= 2,
+        "beliefs": new_beliefs,
     }
 
 
@@ -1027,7 +1079,7 @@ def run_agent_react(question: str, max_iterations: int = 12, verbose: bool = Fal
     """Legacy ReAct loop. Kept for A/B comparison with plan-then-execute."""
     llm_call = _call_claude if backend == "claude" else _call_ollama
 
-    react_system = """You are the US Policy Researcher agent for the Global Healthcare Barrier Registry.
+    react_system = """You are the US Policy Researcher agent for the Barrier Registry.
 
 RULES:
 - You can ONLY use data from the database via tools. NEVER answer from general knowledge.

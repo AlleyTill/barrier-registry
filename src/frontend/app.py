@@ -1,26 +1,28 @@
 """
-Global Healthcare Barrier Registry — Streamlit Frontend
+Barrier Registry — Streamlit Frontend
 
 Provides a web interface for querying cross-border healthcare policy barriers.
 Runs the plan-then-execute agent pipeline and displays structured results.
 """
 
 import streamlit as st
+import json
 import time
 from src.agents.framework import (
     run_agent_detailed, _get_available_categories, _detect_countries,
     _get_country_counts, _is_cross_border,
 )
+from src.beliefs.manager import get_active_beliefs, get_belief_count
 
 # --- Page Config ---
 st.set_page_config(
-    page_title="Healthcare Barrier Registry",
+    page_title="Barrier Registry",
     page_icon="🏥",
     layout="wide",
 )
 
 # --- Header ---
-st.title("Global Healthcare Barrier Registry")
+st.title("Barrier Registry")
 st.markdown("*Map the barriers to cross-border healthcare — so you know what you're walking into.*")
 st.divider()
 
@@ -42,6 +44,21 @@ with st.sidebar:
     cats = _get_available_categories()
     for country, country_cats in sorted(cats.items()):
         st.markdown(f"**{country}**: {len(country_cats)} categories")
+
+    st.divider()
+
+    # Belief stats
+    st.header("Beliefs")
+    try:
+        counts = get_belief_count()
+        active = counts.get("active", 0)
+        stale = counts.get("stale", 0)
+        superseded = counts.get("superseded", 0)
+        st.markdown(f"**Active:** {active}")
+        st.markdown(f"**Stale:** {stale}")
+        st.markdown(f"**Superseded:** {superseded}")
+    except Exception:
+        st.markdown("*No beliefs yet*")
 
     st.divider()
     st.caption("Built for AWE 2026 — June 15-18, Long Beach")
@@ -150,6 +167,72 @@ if run_button and question.strip():
     # Main answer
     st.markdown("## Analysis")
     st.markdown(result["answer"])
+
+    # --- Belief Network Panel ---
+    st.divider()
+    st.markdown("## Belief Network")
+    st.caption("SALT-inspired persistent inferences — the system learns from every query")
+
+    new_beliefs = result.get("beliefs", [])
+    prior_beliefs = result.get("execution_results", {}).get("prior_beliefs", [])
+
+    if new_beliefs:
+        st.markdown(f"### New Beliefs ({len(new_beliefs)} extracted)")
+        for b in new_beliefs:
+            classification = b.get("classification", "")
+            confidence = b.get("confidence_score", 0)
+            source_ids = b.get("source_record_ids", "[]")
+            if isinstance(source_ids, str):
+                source_ids = json.loads(source_ids)
+
+            col_tag, col_text = st.columns([1, 4])
+            with col_tag:
+                badge_colors = {
+                    "PROHIBITION": "red",
+                    "CONFLICT": "orange",
+                    "REGULATORY_GAP": "blue",
+                    "ASYMMETRY": "violet",
+                }
+                color = badge_colors.get(classification, "gray")
+                st.markdown(f":{color}[**{classification}**]")
+                st.progress(confidence, text=f"{confidence:.0%}")
+            with col_text:
+                st.markdown(f"**{b['statement_text']}**")
+                st.caption(f"Category: {b.get('category', 'N/A')} | Sources: {source_ids}")
+
+    if prior_beliefs:
+        with st.expander(f"Prior Beliefs ({len(prior_beliefs)} active)", expanded=False):
+            for b in prior_beliefs:
+                conf = b.get("confidence_score", 0)
+                st.markdown(
+                    f"- [{b.get('classification', '')}] {b['statement_text']} "
+                    f"*(confidence: {conf:.0%}, sources: {b.get('source_record_ids', [])})*"
+                )
+
+    if not new_beliefs and not prior_beliefs:
+        st.info("No beliefs yet. Run a cross-border query to start building the belief network.")
+
+    # --- Belief Graph Visualization ---
+    if result["is_cross_border"] and new_beliefs:
+        st.markdown("### Agent Network")
+        countries = result["countries"]
+        if len(countries) >= 2:
+            # Build Graphviz DOT with belief edges
+            edges = []
+            for b in new_beliefs:
+                label = b.get("classification", "barrier")
+                short_text = b["statement_text"][:50]
+                edges.append(f'  "{countries[0]}" -> "{countries[1]}" [label="{label}\\n{short_text}..."]')
+
+            dot = f"""digraph beliefs {{
+  rankdir=LR
+  node [shape=box, style=filled, fillcolor=lightblue, fontsize=14]
+  edge [fontsize=9, color=gray40]
+  "{countries[0]}" [fillcolor=lightyellow]
+  "{countries[1]}" [fillcolor=lightyellow]
+{chr(10).join(edges)}
+}}"""
+            st.graphviz_chart(dot)
 
 elif run_button:
     st.warning("Please enter a question.")
