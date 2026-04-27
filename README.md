@@ -60,7 +60,7 @@ Opens at `http://localhost:8501`.
 - `src/data_ingestion/` — embeddings + Qdrant indexing
 - `src/frontend/` — Streamlit UI
 - `data/` — seeded policy corpus
-- `tests/` — 108 tests covering the agent pipeline, belief layer, and synthesis correctness
+- `tests/` — 135 tests covering the agent pipeline, belief layer, and synthesis correctness
 - `openspec/` — proposal, tasks, and governance documents from the spec-driven build process
 - `CHECKPOINTS.md` — checkpoint log from the build
 
